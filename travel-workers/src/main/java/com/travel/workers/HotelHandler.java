@@ -12,22 +12,22 @@ import java.util.Map;
 import java.util.UUID;
 
 //Input
-class BookingRequest {
+class HotelRequest {
     public String bookingId;
     public String userId;
     public String destination;
 
-    public BookingRequest (){}
+    public HotelRequest (){}
 }
 
 //Output
-class BookingResponse {
+class HotelResponse {
     public String bookingId;
     public String status;
     public String message;
     public String hotelNumber;
 
-    public BookingResponse (String bookingId, String status, String message, String hotelNumber) {
+    public HotelResponse (String bookingId, String status, String message, String hotelNumber) {
         this.bookingId = bookingId;
         this.status = status;
         this.message = message;
@@ -37,7 +37,7 @@ class BookingResponse {
 
 
 //Handler(Actual lambda logic)
-public class HotelHandler implements RequestHandler<Map<String,Object>,BookingResponse>{
+public class HotelHandler implements RequestHandler<Map<String,Object>,HotelResponse>{
 
     private final DynamoDbClient dynamoDb;
     private final String TABLE_NAME = "Travel_Hotels";
@@ -49,7 +49,7 @@ public class HotelHandler implements RequestHandler<Map<String,Object>,BookingRe
     }
 
     @Override
-    public BookingResponse handleRequest(Map<String,Object> input, Context context) {
+    public HotelResponse handleRequest(Map<String,Object> input, Context context) {
 
         //Extract data from input
         String bookingId = (String)input.getOrDefault("bookingId",UUID.randomUUID().toString());
@@ -70,7 +70,7 @@ public class HotelHandler implements RequestHandler<Map<String,Object>,BookingRe
         //Saving result to dynamoDb
         savingBooking(bookingId,userId,destination,hotelNumber);
 
-        return new BookingResponse(bookingId,"SUCCESS","Hotel Booked",hotelNumber);
+        return new HotelResponse(bookingId,"SUCCESS","Hotel Booked",hotelNumber);
 
     }
 

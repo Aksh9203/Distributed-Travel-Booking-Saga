@@ -13,31 +13,31 @@ import java.util.UUID;
 
 
 //Input
-class BookingRequest{
+class FlightRequest{
     public String bookingId;
     public String userId;
     public String destination;
 
-    public BookingRequest(String bookingId, String userId, String destination){}
+    public FlightRequest(String bookingId, String userId, String destination){}
 }
 
 //Output
-class BookingResponse{
+class FlightResponse{
     public String bookingId;
     public String status;
     public String message;
     public String flightNumber;
 
-    public BookingResponse(String bookingId, String status, String message, String flightNumber){
-        this.bookingId = id;
+    public FlightResponse(String bookingId, String status, String message, String flightNumber){
+        this.bookingId = bookingId;
         this.status = status;
-        this.message = msg;
-        this.flightNumber = flight;
+        this.message = message;
+        this.flightNumber = flightNumber;
     }
 }
 
 //Handler(actual lambda code)
-public class FlightHandler implements RequestHandler<Map<String,Object>,BookingResponse>{
+public class FlightHandler implements RequestHandler<Map<String,Object>,FlightResponse>{
 
     private final DynamoDbClient dynamoDb;
     private final String TABLE_NAME = "Travel_Flights";
@@ -45,48 +45,48 @@ public class FlightHandler implements RequestHandler<Map<String,Object>,BookingR
     public FlightHandler(){
         this.dynamoDb = DynamoDbClient.builder()
                 .region(Region.US_EAST_1)
-                .build
+                .build();
     }
 
     @Override
-    public BookingResponse handleRequest(Map<String,Object> input, Context context) {
+    public FlightResponse handleRequest(Map<String,Object> input, Context context) {
         //Extract data from input
-        String bookingId = input.getOrDefault("bookingId",UUID.randomUUID.toString());
-        String userId = input.get("userId");
-        String destination = input.get("destination");
+        String bookingId = (String)input.getOrDefault("bookingId",UUID.randomUUID().toString());
+        String userId = (String)input.get("userId");
+        String destination = (String)input.get("destination");
 
-        context.getLogger.log("Booking Flights to: " + destination);
+        context.getLogger().log("Booking Flights to: " + destination);
 
         //Failure Scenario
         if("Mars".equalsIgnoreCase(destination)){
-            throw new RuntimeException("Flights to Mars are temprorarily cancel worldwide. Try Later.")
+            throw new RuntimeException("Flights to Mars are temprorarily cancel worldwide. Try Later.");
         }
 
-        String flightNumber = "FL-" + (int)(Math.random()*100);
+        String flightNumber = "FL-" + (int)(Math.random()*1000);
 
         //Saving result to DynamoDb
         saveBooking(bookingId, userId, destination, flightNumber);
 
-        context,getlogger.log("Flight Confirmed: " + flightNumber);
+        context.getLogger().log("Flight Confirmed: " + flightNumber);
 
-        return new BookingResponse(String bookingId, "SUCCESS", "Flight Booked", String flightNumber)
+        return new FlightResponse(bookingId, "SUCCESS", "Flight Booked", flightNumber);
 
     }
 
     private void saveBooking(String id, String user, String dest, String flight){
         Map<String,AttributeValue> item = new HashMap<>();
-        item.put("booking_id", AttributeValue.builder().s(id).build();
-        item.put("user_id", AttributeValue.builder().s(user).build();
-        item.put("destination", AttributeValue.builder().s(dest).build();
-        item.put("flight_number", AttributeValue.builder().s(flight).build();
-        item.put("status", AttributeValue.builder().s("CONFIRMED").build();
+        item.put("booking_id", AttributeValue.builder().s(id).build());
+        item.put("user_id", AttributeValue.builder().s(user).build());
+        item.put("destination", AttributeValue.builder().s(dest).build());
+        item.put("flight_number", AttributeValue.builder().s(flight).build());
+        item.put("status", AttributeValue.builder().s("CONFIRMED").build());
 
         PutItemRequest request = PutItemRequest.builder()
-                .tablename(TABLE_NAME)
+                .tableName(TABLE_NAME)
                 .item(item)
                 .build();
 
-        DynamoDbClient.putItem(request);
+        dynamoDb.putItem(request);
 
     }
 }

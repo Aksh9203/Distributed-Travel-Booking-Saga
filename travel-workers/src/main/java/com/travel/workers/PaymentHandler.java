@@ -11,21 +11,21 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
-class BookingRequest{
+class PaymentRequest{
     String bookingId;
     String userId;
     String destination;
 
-    public BookingRequest(){}
+    public PaymentRequest(){}
 }
 
-class BookingResponse{
+class PaymentResponse{
     String bookingId;
     String status;
     String message;
     Integer amount;
 
-    public BookingResponse(String bookingId, String status, String message, Integer amount) {
+    public PaymentResponse(String bookingId, String status, String message, Integer amount) {
         this.bookingId = bookingId;
         this.status = status;
         this.message = message;
@@ -33,23 +33,23 @@ class BookingResponse{
     }
 }
 
-public class PaymentHandler implements RequestHandler<Map<String,Object>,BookingResponse>{
+public class PaymentHandler implements RequestHandler<Map<String,Object>,PaymentResponse>{
 
     private final DynamoDbClient dynamoDb;
     private final String TABLE_NAME = "Travel_Payments";
 
     public PaymentHandler(){
         this.dynamoDb = DynamoDbClient.builder()
-                .Region(Region.US_EAST_1)
+                .region(Region.US_EAST_1)
                 .build();
     }
 
     @Override
-    public BookingResponse handleRequest(Map<String,Object> input, Context context) {
+    public PaymentResponse handleRequest(Map<String,Object> input, Context context) {
 
         String bookingId = (String) input.getOrDefault("bookingId",UUID.randomUUID().toString());
         String userId  = (String) input.get("userId");
-        Ineteger amount = (Integer) imput.getOrDefault("amount",150);
+        Integer amount = (Integer) input.getOrDefault("amount",150);
 
         context.getLogger().log("Payent Processeing for: " + userId);
 
@@ -61,13 +61,13 @@ public class PaymentHandler implements RequestHandler<Map<String,Object>,Booking
 
         context.getLogger().log("Payment processed successfully. Transaction ID is: " + transcationId);
 
-        savingBooking(bookingId, userId, destination, amount);
+        savingBooking(bookingId, userId, transcationId, amount);
 
-        return new BookingResponse(bookingId,"SUCCESS","PAYMENT PROCESSED",amount);
+        return new PaymentResponse(bookingId,"SUCCESS","PAYMENT PROCESSED",amount);
 
     }
 
-    private void savingBooking(String id, String user, String dest, Int amt){
+    private void savingBooking(String id, String user, String dest, Integer amt){
         Map<String,AttributeValue> item = new HashMap<>();
         item.put("booking_id", AttributeValue.builder().s(id).build());
         item.put("user_Id", AttributeValue.builder().s(user).build());
