@@ -67,11 +67,11 @@ public class PaymentHandler implements RequestHandler<Map<String,Object>,Payment
 
     }
 
-    private void savingBooking(String id, String user, String dest, Integer amt){
+    private void savingBooking(String id, String user, String txId, Integer amt){
         Map<String,AttributeValue> item = new HashMap<>();
         item.put("booking_id", AttributeValue.builder().s(id).build());
         item.put("user_Id", AttributeValue.builder().s(user).build());
-        item.put("destination", AttributeValue.builder().s(dest).build());
+        item.put("transaction_id", AttributeValue.builder().s(txId).build());
         item.put("amount", AttributeValue.builder().n(String.valueOf(amt)).build());
         item.put("status", AttributeValue.builder().s("PROCESSED").build());
 
