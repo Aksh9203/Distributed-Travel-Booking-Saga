@@ -11,14 +11,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
-//Input
-class HotelRequest {
-    public String bookingId;
-    public String userId;
-    public String destination;
-
-    public HotelRequest (){}
-}
 
 //Output
 class HotelResponse {

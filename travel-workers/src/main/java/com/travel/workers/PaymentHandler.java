@@ -11,14 +11,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
-class PaymentRequest{
-    String bookingId;
-    String userId;
-    String destination;
-
-    public PaymentRequest(){}
-}
-
 class PaymentResponse{
     String bookingId;
     String status;
@@ -47,6 +39,7 @@ public class PaymentHandler implements RequestHandler<Map<String,Object>,Payment
     @Override
     public PaymentResponse handleRequest(Map<String,Object> input, Context context) {
 
+        //Extract data from the input.
         String bookingId = (String) input.getOrDefault("bookingId",UUID.randomUUID().toString());
         String userId  = (String) input.get("userId");
         Integer amount = (Integer) input.getOrDefault("amount",150);

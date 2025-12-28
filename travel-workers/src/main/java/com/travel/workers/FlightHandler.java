@@ -12,15 +12,6 @@ import java.util.Map;
 import java.util.UUID;
 
 
-//Input
-class FlightRequest{
-    public String bookingId;
-    public String userId;
-    public String destination;
-
-    public FlightRequest(String bookingId, String userId, String destination){}
-}
-
 //Output
 class FlightResponse{
     public String bookingId;
