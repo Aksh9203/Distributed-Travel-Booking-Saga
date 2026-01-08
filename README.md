@@ -22,17 +22,3 @@ If the *Hotel* service is full or *Payment* is declined:
 3.  Triggers `UndoFlight` (Updates status to `CANCELLED`).
 4.  System returns to a consistent state.
 
-## 🚀 How to Run
-**Endpoint:** `POST https://[YOUR-API-ID].execute-api.us-east-1.amazonaws.com/dev/book`
-
-**Headers:**
-`x-api-key`: `[YOUR-API-KEY]`
-
-**Success Scenario (JSON Body):**
-```json
-{
-  "bookingId": "TRIP-101",
-  "userId": "UserA",
-  "destination": "Paris",
-  "amount": 500
-}
