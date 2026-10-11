@@ -10,6 +10,8 @@
 step-function.json
 **/step-function.json
 !**/step-function.json.example
+instructions.md
+**/instructions.md
 
 # --- Maven & Compiled Binaries ---
 target/

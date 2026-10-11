@@ -65,7 +65,7 @@ flowchart TD
     end
 
     subgraph Asynchronous Notification Pipeline
-        DDB_Outbox -.->|DynamoDB Stream (NEW_IMAGE)| RelayLambda["Outbox Relay Lambda"]
+        DDB_Outbox -.->|"DynamoDB Stream (NEW_IMAGE)"| RelayLambda["Outbox Relay Lambda"]
         RelayLambda -->|Publish with Attributes| SNS["SNS Topic: TravelBookingEventsTopic"]
         SNS --> SQS["SQS Queue: TravelNotificationQueue"]
         SQS -.->|After 3 Failures| DLQ["SQS DLQ: TravelNotificationDLQ"]
@@ -113,11 +113,10 @@ travel-booking/
 ├── .gitignore                           # Comprehensive root gitignore (secrets, build artifacts, IDEs)
 ├── README.md                            # Production architectural documentation (this file)
 ├── booking.json                         # Sample Step Functions execution input payload
-├── instructions.md                      # Architecture requirements and checklist
 │
 ├── infrastructure/                      # Infrastructure as Code (AWS SAM)
 │   ├── template.yaml                    # DynamoDB, SQS, SNS, Lambdas, Step Functions
-│   ├── step-function.json               # Payment-First Saga ASL state machine definition
+│   ├── step-function.json.example       # Payment-First Saga ASL state machine definition
 │   └── README.md                        # Infrastructure deployment & DLQ redrive guide
 │
 ├── travel-workers/                      # Serverless microservices (Java 21 AWS Lambda)
