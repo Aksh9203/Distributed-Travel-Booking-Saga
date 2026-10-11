@@ -354,5 +354,3 @@ aws sqs list-message-move-tasks \
 
 ---
 
-## 📄 License
-This project is licensed under the MIT License - see the LICENSE file for details.
