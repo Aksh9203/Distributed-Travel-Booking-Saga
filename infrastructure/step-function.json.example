@@ -1,0 +1,109 @@
+{
+  "Comment": "Payment-First Serverless Travel Booking Saga with Decoupled Event-Driven Notifications",
+  "StartAt": "Process Payment",
+  "States": {
+    "Process Payment": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:<AWS_ACCOUNT_ID>:function:TravelPaymentFunction",
+      "Parameters": {
+        "action": "PAY",
+        "userId.$": "$.userId",
+        "userEmail.$": "$.userEmail",
+        "bookingId.$": "$.bookingId",
+        "destination.$": "$.destination",
+        "amount.$": "$.amount"
+      },
+      "ResultPath": "$.paymentResult",
+      "Next": "Book Flight",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Payment Fail",
+          "ResultPath": "$.errorInfo"
+        }
+      ]
+    },
+    "Payment Fail": {
+      "Type": "Fail",
+      "Cause": "Payment Processing Failed",
+      "Error": "PaymentError"
+    },
+    "Book Flight": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:<AWS_ACCOUNT_ID>:function:TravelFlightFunction",
+      "Parameters": {
+        "action": "BOOK",
+        "userId.$": "$.userId",
+        "userEmail.$": "$.userEmail",
+        "destination.$": "$.destination",
+        "bookingId.$": "$.bookingId"
+      },
+      "ResultPath": "$.flightResult",
+      "Next": "Book Hotel",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Refund Payment",
+          "ResultPath": "$.errorInfo"
+        }
+      ]
+    },
+    "Book Hotel": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:<AWS_ACCOUNT_ID>:function:TravelHotelFunction",
+      "Parameters": {
+        "action": "BOOK",
+        "userId.$": "$.userId",
+        "userEmail.$": "$.userEmail",
+        "destination.$": "$.destination",
+        "bookingId.$": "$.bookingId"
+      },
+      "ResultPath": "$.hotelResult",
+      "Next": "Booking Success",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Undo Flight",
+          "ResultPath": "$.errorInfo"
+        }
+      ]
+    },
+    "Booking Success": {
+      "Type": "Succeed"
+    },
+    "Undo Flight": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:<AWS_ACCOUNT_ID>:function:TravelFlightFunction",
+      "Parameters": {
+        "action": "CANCEL",
+        "bookingId.$": "$.bookingId",
+        "flightNumber.$": "$.flightResult.flightNumber"
+      },
+      "ResultPath": "$.undoFlightResult",
+      "Next": "Refund Payment"
+    },
+    "Refund Payment": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:<AWS_ACCOUNT_ID>:function:TravelPaymentFunction",
+      "Parameters": {
+        "action": "REFUND",
+        "bookingId.$": "$.bookingId",
+        "transactionId.$": "$.paymentResult.transactionId",
+        "amount.$": "$.amount"
+      },
+      "ResultPath": "$.refundPaymentResult",
+      "Next": "Saga Fail"
+    },
+    "Saga Fail": {
+      "Type": "Fail",
+      "Cause": "Transaction Failed - Compensation Logic Completed",
+      "Error": "SagaRollbackComplete"
+    }
+  }
+}

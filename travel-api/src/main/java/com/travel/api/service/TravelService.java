@@ -27,11 +27,9 @@ public class TravelService {
     public ResponseEntity<String> callExternalApi(BookingRequest bookingRequest) {
         HttpHeaders headers = new HttpHeaders();
         headers.add("x-api-key", apiKey);
-        HttpEntity<Object> entity=new HttpEntity<Object>(bookingRequest,headers);
+        HttpEntity<Object> entity = new HttpEntity<Object>(bookingRequest, headers);
         ResponseEntity<String> response = restTemplate.exchange(apiUrl, HttpMethod.POST, entity, String.class);
 
         return response;
-        }
-
-
+    }
 }

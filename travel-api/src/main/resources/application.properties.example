@@ -1,0 +1,9 @@
+spring.application.name=travel-api
+
+# Server Configuration
+server.port=8080
+
+# AWS API Gateway Configuration
+# Provide your deployed AWS API Gateway endpoint URL and API Key
+aws.api.url=${AWS_API_URL:https://<api-id>.execute-api.us-east-1.amazonaws.com/dev/book}
+aws.api.key=${AWS_API_KEY:your-aws-api-key-here}

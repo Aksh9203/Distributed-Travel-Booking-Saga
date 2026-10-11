@@ -1,0 +1,270 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Serverless Distributed Travel Booking System.
+  Implements Payment-First Saga Pattern with Transactional Outbox,
+  DynamoDB Streams to SNS Relay, SQS with Dead Letter Queue (DLQ),
+  and SES Asynchronous Email Notifications.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: Deployment stage environment (dev, staging, prod)
+  SenderEmail:
+    Type: String
+    Default: xyz@gmail.com
+    Description: Verified AWS SES email identity for sending booking confirmations
+
+Globals:
+  Function:
+    Runtime: java21
+    Timeout: 30
+    MemorySize: 512
+    CodeUri: ../travel-workers/target/travel-workers-1.0-SNAPSHOT.jar
+    Environment:
+      Variables:
+        OUTBOX_TABLE_NAME: !Ref TravelOutboxTable
+        PAYMENT_TABLE_NAME: !Ref TravelPaymentsTable
+        FLIGHT_TABLE_NAME: !Ref TravelFlightsTable
+        HOTEL_TABLE_NAME: !Ref TravelHotelsTable
+        SNS_TOPIC_ARN: !Ref TravelBookingEventsTopic
+        SES_FROM_EMAIL: !Ref SenderEmail
+        AWS_REGION: !Ref AWS::Region
+
+Resources:
+  # =========================================================================
+  # 1. DynamoDB Tables
+  # =========================================================================
+  TravelPaymentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Travel_Payments
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: booking_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: booking_id
+          KeyType: HASH
+
+  TravelFlightsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Travel_Flights
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: booking_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: booking_id
+          KeyType: HASH
+
+  TravelHotelsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Travel_Hotels
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: booking_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: booking_id
+          KeyType: HASH
+
+  # Transactional Outbox Table with Streams and TTL
+  TravelOutboxTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: TravelOutbox
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: eventId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: eventId
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # =========================================================================
+  # 2. Central SNS Topic & SQS Pipeline with Dead Letter Queue (DLQ)
+  # =========================================================================
+  TravelBookingEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "TravelBookingEventsTopic-${Environment}"
+
+  # Dead Letter Queue for failed / poisoned notification messages
+  TravelNotificationDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "TravelNotificationDLQ-${Environment}"
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  # Main SQS Queue subscribed to SNS, routing to DLQ after 3 failures
+  TravelNotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "TravelNotificationQueue-${Environment}"
+      VisibilityTimeout: 60
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt TravelNotificationDLQ.Arn
+        maxReceiveCount: 3
+
+  # Permission policy allowing SNS to publish to SQS
+  TravelNotificationQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref TravelNotificationQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt TravelNotificationQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref TravelBookingEventsTopic
+
+  # SNS to SQS Subscription
+  TravelNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref TravelBookingEventsTopic
+      Endpoint: !GetAtt TravelNotificationQueue.Arn
+      Protocol: sqs
+      RawMessageDelivery: false
+
+  # CloudWatch Alarm triggering on messages arriving in DLQ
+  TravelNotificationDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TravelNotificationDLQAlarm-${Environment}"
+      AlarmDescription: "Alerts when messages fail 3 retry attempts and enter the DLQ"
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt TravelNotificationDLQ.QueueName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+
+  # =========================================================================
+  # 3. AWS Lambda Functions
+  # =========================================================================
+  TravelPaymentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "TravelPaymentFunction-${Environment}"
+      Handler: com.travel.workers.PaymentHandler::handleRequest
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TravelPaymentsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TravelOutboxTable
+
+  TravelFlightFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "TravelFlightFunction-${Environment}"
+      Handler: com.travel.workers.FlightHandler::handleRequest
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TravelFlightsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TravelOutboxTable
+
+  TravelHotelFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "TravelHotelFunction-${Environment}"
+      Handler: com.travel.workers.HotelHandler::handleRequest
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TravelHotelsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TravelOutboxTable
+
+  # Outbox Relay Lambda: Consumes DynamoDB Streams from TravelOutbox -> Publishes to SNS
+  TravelOutboxRelayFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "TravelOutboxRelayFunction-${Environment}"
+      Handler: com.travel.workers.OutboxRelayHandler::handleRequest
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt TravelBookingEventsTopic.TopicName
+        - AWSLambdaDynamoDBExecutionRole
+      Events:
+        OutboxStream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt TravelOutboxTable.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 10
+            BisectBatchOnFunctionError: true
+            MaximumRetryAttempts: 3
+
+  # Notification Consumer Lambda: Polls SQS -> Dispatches SES Email
+  TravelNotificationConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "TravelNotificationConsumerFunction-${Environment}"
+      Handler: com.travel.workers.NotificationConsumerHandler::handleRequest
+      Policies:
+        - SQSPollerPolicy:
+            QueueName: !GetAtt TravelNotificationQueue.QueueName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt TravelNotificationQueue.Arn
+            BatchSize: 10
+
+  # =========================================================================
+  # 4. Step Functions State Machine (Payment-First Saga)
+  # =========================================================================
+  TravelBookingStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "TravelBookingSaga-${Environment}"
+      DefinitionUri: ./step-function.json
+      DefinitionSubstitutions:
+        PaymentFunctionArn: !GetAtt TravelPaymentFunction.Arn
+        FlightFunctionArn: !GetAtt TravelFlightFunction.Arn
+        HotelFunctionArn: !GetAtt TravelHotelFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref TravelPaymentFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref TravelFlightFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref TravelHotelFunction
+
+Outputs:
+  OutboxTableName:
+    Value: !Ref TravelOutboxTable
+  SNSTopicArn:
+    Value: !Ref TravelBookingEventsTopic
+  NotificationQueueUrl:
+    Value: !Ref TravelNotificationQueue
+  NotificationDLQUrl:
+    Value: !Ref TravelNotificationDLQ
+  StateMachineArn:
+    Value: !Ref TravelBookingStateMachine

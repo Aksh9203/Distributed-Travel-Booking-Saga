@@ -24,5 +24,4 @@ public class BookingController {
         ResponseEntity<String> result = travelService.callExternalApi(bookingRequest);
         return result;
     }
-
 }

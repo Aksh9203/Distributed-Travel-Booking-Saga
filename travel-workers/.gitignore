@@ -1,6 +1,9 @@
 # --- User Custom Rules ---
-travel-api/api/src/main/resources/application.properties
+# This rule ignores application.properties in ANY folder
+**/application.properties
+*.log
 
+# Maven
 target/
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/

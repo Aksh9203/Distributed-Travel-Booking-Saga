@@ -1,0 +1,72 @@
+# ==============================================================================
+# Git Ignore - Distributed Travel Booking System
+# ==============================================================================
+
+# --- Secrets & Environment Configurations ---
+**/application.properties
+!**/application.properties.example
+*.env
+*.env.*
+step-function.json
+**/step-function.json
+!**/step-function.json.example
+
+# --- Maven & Compiled Binaries ---
+target/
+**/target/
+*.class
+*.jar
+*.war
+*.ear
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+
+# --- AWS SAM / Serverless Build Artifacts ---
+.aws-sam/
+
+# --- Logs & Runtime Data ---
+*.log
+**/logs/
+
+# --- IDEs & Editors ---
+# IntelliJ IDEA
+.idea/
+**/.idea/
+*.iml
+**/*.iml
+*.iws
+out/
+gen/
+
+# Eclipse
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+# Visual Studio Code
+.vscode/
+**/.vscode/
+
+# NetBeans
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbproject/load-target.xml
+
+# --- OS System Files ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
