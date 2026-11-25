@@ -10,8 +10,15 @@
 step-function.json
 **/step-function.json
 !**/step-function.json.example
+# --- Project Notes & Internal Planning ---
 instructions.md
 **/instructions.md
+planning.txt
+**/planning.txt
+Travel_Booking_project.md
+**/Travel_Booking_project.md
+Tavel_Booking_project.md
+**/Tavel_Booking_project.md
 
 # --- Maven & Compiled Binaries ---
 target/
