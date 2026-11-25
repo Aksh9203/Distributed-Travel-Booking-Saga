@@ -80,10 +80,11 @@ public class HotelHandler implements RequestHandler<Map<String, Object>, HotelRe
     private HotelResponse cancelHotel(Map<String, Object> input, Context context) {
         String bookingId = (String) input.get("bookingId");
         String hotelNumber = (String) input.getOrDefault("hotelNumber", (String) input.get("flightNumber"));
+        String userEmail = (String) input.getOrDefault("userEmail", input.get("email"));
 
         context.getLogger().log("Compensating Transaction: Cancelling Hotel for Booking ID: " + bookingId);
 
-        updateStatusToCancelledAndOutbox(bookingId, hotelNumber);
+        updateStatusToCancelledAndOutbox(bookingId, hotelNumber, userEmail);
         return new HotelResponse(bookingId, "SUCCESS", "Hotel Cancelled (Compensated)", hotelNumber);
     }
 
@@ -127,7 +128,7 @@ public class HotelHandler implements RequestHandler<Map<String, Object>, HotelRe
         dynamoDb.transactWriteItems(request);
     }
 
-    private void updateStatusToCancelledAndOutbox(String bookingId, String hotelNumber) {
+    private void updateStatusToCancelledAndOutbox(String bookingId, String hotelNumber, String userEmail) {
         Map<String, AttributeValue> key = new HashMap<>();
         key.put("booking_id", AttributeValue.builder().s(bookingId).build());
 
@@ -142,6 +143,7 @@ public class HotelHandler implements RequestHandler<Map<String, Object>, HotelRe
         Map<String, Object> outboxPayload = new HashMap<>();
         outboxPayload.put("bookingId", bookingId);
         outboxPayload.put("hotelNumber", hotelNumber);
+        if (userEmail != null) outboxPayload.put("userEmail", userEmail);
         outboxPayload.put("status", "CANCELLED");
         outboxPayload.put("eventType", "HOTEL_CANCELLED");
 

@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
@@ -64,10 +65,37 @@ public class CompensationNotificationTest {
             new PaymentHandler(dynamoDb).handleRequest(input, context);
         }
 
+        assertCustomerEmailedOnce(outboxPayload());
+    }
+
+    @Test
+    void hotelCancelEmailsCustomer() throws Exception {
+        new HotelHandler(dynamoDb).handleRequest(Map.of("action", "CANCEL", "bookingId", "bk-rollback",
+                "hotelNumber", "HL-1", "userEmail", "customer@example.com"), context);
+
+        assertCustomerEmailedOnce(outboxPayload());
+    }
+
+    @Test
+    void compensationPayloadsOmitAbsentUserEmail() throws Exception {
+        new FlightHandler(dynamoDb).handleRequest(Map.of("action", "CANCEL", "bookingId", "b", "flightNumber", "FL-1"), context);
+        new HotelHandler(dynamoDb).handleRequest(Map.of("action", "CANCEL", "bookingId", "b", "hotelNumber", "HL-1"), context);
+        new PaymentHandler(dynamoDb).handleRequest(Map.of("action", "REFUND", "bookingId", "b", "transactionId", "TX-1", "amount", 100), context);
+
+        ArgumentCaptor<TransactWriteItemsRequest> captor = ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+        verify(dynamoDb, times(3)).transactWriteItems(captor.capture());
+        for (TransactWriteItemsRequest request : captor.getAllValues()) {
+            assertFalse(MAPPER.readTree(request.transactItems().get(1).put().item().get("payload").s()).has("userEmail"));
+        }
+    }
+
+    private String outboxPayload() {
         ArgumentCaptor<TransactWriteItemsRequest> captor = ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
         verify(dynamoDb).transactWriteItems(captor.capture());
-        String payload = captor.getValue().transactItems().get(1).put().item().get("payload").s();
+        return captor.getValue().transactItems().get(1).put().item().get("payload").s();
+    }
 
+    private void assertCustomerEmailedOnce(String payload) throws Exception {
         SQSEvent.SQSMessage message = new SQSEvent.SQSMessage();
         message.setMessageId("msg-1");
         message.setBody(MAPPER.writeValueAsString(Map.of("Type", "Notification", "Message", payload)));

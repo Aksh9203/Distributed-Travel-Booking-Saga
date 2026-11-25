@@ -81,10 +81,11 @@ public class FlightHandler implements RequestHandler<Map<String, Object>, Flight
     private FlightResponse cancelFlight(Map<String, Object> input, Context context) {
         String bookingId = (String) input.get("bookingId");
         String flightNumber = (String) input.get("flightNumber");
+        String userEmail = (String) input.getOrDefault("userEmail", input.get("email"));
 
         context.getLogger().log("Compensating Transaction: Cancelling Flight for Booking ID: " + bookingId);
 
-        updateStatusToCancelledAndOutbox(bookingId, flightNumber);
+        updateStatusToCancelledAndOutbox(bookingId, flightNumber, userEmail);
         return new FlightResponse(bookingId, "SUCCESS", "Flight Cancelled (Compensated)", flightNumber);
     }
 
@@ -128,7 +129,7 @@ public class FlightHandler implements RequestHandler<Map<String, Object>, Flight
         dynamoDb.transactWriteItems(request);
     }
 
-    private void updateStatusToCancelledAndOutbox(String bookingId, String flightNumber) {
+    private void updateStatusToCancelledAndOutbox(String bookingId, String flightNumber, String userEmail) {
         Map<String, AttributeValue> key = new HashMap<>();
         key.put("booking_id", AttributeValue.builder().s(bookingId).build());
 
@@ -143,6 +144,7 @@ public class FlightHandler implements RequestHandler<Map<String, Object>, Flight
         Map<String, Object> outboxPayload = new HashMap<>();
         outboxPayload.put("bookingId", bookingId);
         outboxPayload.put("flightNumber", flightNumber);
+        if (userEmail != null) outboxPayload.put("userEmail", userEmail);
         outboxPayload.put("status", "CANCELLED");
         outboxPayload.put("eventType", "FLIGHT_CANCELLED");
 
