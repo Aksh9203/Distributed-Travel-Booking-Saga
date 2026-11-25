@@ -2,6 +2,7 @@ package com.travel.workers;
 
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
+import com.amazonaws.services.lambda.runtime.events.SQSBatchResponse;
 import com.amazonaws.services.lambda.runtime.events.SQSEvent;
 import com.amazonaws.services.lambda.runtime.events.SQSEvent.SQSMessage;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -16,12 +17,15 @@ import software.amazon.awssdk.services.ses.model.Message;
 import software.amazon.awssdk.services.ses.model.SendEmailRequest;
 import software.amazon.awssdk.services.ses.model.SendEmailResponse;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Asynchronous Notification Consumer Lambda that polls SQS messages,
  * parses Outbox event payloads (unwrapping SNS envelopes if needed),
  * and triggers AWS SES to dispatch transactional confirmation emails to users.
  */
-public class NotificationConsumerHandler implements RequestHandler<SQSEvent, String> {
+public class NotificationConsumerHandler implements RequestHandler<SQSEvent, SQSBatchResponse> {
 
     private final SesClient sesClient;
     private final String fromEmail;
@@ -42,15 +46,15 @@ public class NotificationConsumerHandler implements RequestHandler<SQSEvent, Str
     }
 
     @Override
-    public String handleRequest(SQSEvent sqsEvent, Context context) {
+    public SQSBatchResponse handleRequest(SQSEvent sqsEvent, Context context) {
         if (sqsEvent == null || sqsEvent.getRecords() == null || sqsEvent.getRecords().isEmpty()) {
             if (context != null && context.getLogger() != null) {
                 context.getLogger().log("No records received in SQS event.");
             }
-            return "SUCCESS: 0 messages processed";
+            return new SQSBatchResponse(new ArrayList<>());
         }
 
-        int sentCount = 0;
+        List<SQSBatchResponse.BatchItemFailure> failures = new ArrayList<>();
 
         for (SQSMessage message : sqsEvent.getRecords()) {
             try {
@@ -78,18 +82,17 @@ public class NotificationConsumerHandler implements RequestHandler<SQSEvent, Str
                 }
 
                 sendEmail(userEmail, bookingId, eventType, destination, status, payloadNode, context);
-                sentCount++;
 
             } catch (Exception e) {
                 if (context != null && context.getLogger() != null) {
                     context.getLogger().log("Error processing SQS record " + message.getMessageId() + ": " + e.getMessage());
                 }
-                // Throwing exception lets SQS retry and eventually route to Dead Letter Queue (DLQ) after max retries
-                throw new RuntimeException("Failed to process SQS notification for message " + message.getMessageId(), e);
+                // Only this message is retried and, after maxReceiveCount, dead-lettered (needs ReportBatchItemFailures)
+                failures.add(new SQSBatchResponse.BatchItemFailure(message.getMessageId()));
             }
         }
 
-        return "SUCCESS: " + sentCount + " emails sent";
+        return new SQSBatchResponse(failures);
     }
 
     /**

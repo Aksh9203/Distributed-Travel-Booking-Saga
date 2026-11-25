@@ -236,6 +236,8 @@ Resources:
           Properties:
             Queue: !GetAtt TravelNotificationQueue.Arn
             BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
 
   # =========================================================================
   # 4. Step Functions State Machine (Payment-First Saga)

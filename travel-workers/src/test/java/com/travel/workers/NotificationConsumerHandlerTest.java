@@ -57,9 +57,9 @@ public class NotificationConsumerHandlerTest {
         when(sesClient.sendEmail(any(SendEmailRequest.class)))
                 .thenReturn(SendEmailResponse.builder().messageId("ses-out-1").build());
 
-        String result = handler.handleRequest(event, context);
+        SQSBatchResponse result = handler.handleRequest(event, context);
 
-        assertTrue(result.contains("1 emails sent"));
+        assertTrue(result.getBatchItemFailures().isEmpty());
 
         ArgumentCaptor<SendEmailRequest> captor = ArgumentCaptor.forClass(SendEmailRequest.class);
         verify(sesClient, times(1)).sendEmail(captor.capture());
@@ -94,9 +94,9 @@ public class NotificationConsumerHandlerTest {
         when(sesClient.sendEmail(any(SendEmailRequest.class)))
                 .thenReturn(SendEmailResponse.builder().messageId("ses-out-2").build());
 
-        String result = handler.handleRequest(event, context);
+        SQSBatchResponse result = handler.handleRequest(event, context);
 
-        assertTrue(result.contains("1 emails sent"));
+        assertTrue(result.getBatchItemFailures().isEmpty());
 
         ArgumentCaptor<SendEmailRequest> captor = ArgumentCaptor.forClass(SendEmailRequest.class);
         verify(sesClient, times(1)).sendEmail(captor.capture());
@@ -119,14 +119,14 @@ public class NotificationConsumerHandlerTest {
         SQSEvent event = new SQSEvent();
         event.setRecords(Collections.singletonList(sqsMessage));
 
-        String result = handler.handleRequest(event, context);
+        SQSBatchResponse result = handler.handleRequest(event, context);
 
-        assertTrue(result.contains("0 emails sent"));
+        assertTrue(result.getBatchItemFailures().isEmpty());
         verify(sesClient, never()).sendEmail(any(SendEmailRequest.class));
     }
 
     @Test
-    void testSesFailureRethrowsExceptionForDlq() {
+    void testSesFailureIsReportedAsBatchItemFailure() {
         NotificationConsumerHandler handler = new NotificationConsumerHandler(sesClient, FROM_EMAIL);
 
         String jsonPayload = "{\"bookingId\":\"bk-err\",\"userEmail\":\"err@domain.com\",\"eventType\":\"PAYMENT_COMPLETED\"}";
@@ -141,7 +141,19 @@ public class NotificationConsumerHandlerTest {
         when(sesClient.sendEmail(any(SendEmailRequest.class)))
                 .thenThrow(new RuntimeException("SES quota exceeded"));
 
-        assertThrows(RuntimeException.class, () -> handler.handleRequest(event, context));
+        SQSBatchResponse result = handler.handleRequest(event, context);
+
+        assertEquals(1, result.getBatchItemFailures().size());
+        assertEquals("sqs-msg-4", result.getBatchItemFailures().get(0).getItemIdentifier());
+    }
+
+    @Test
+    void batchResponseSerializesToLambdaShape() throws Exception {
+        SQSBatchResponse response = new SQSBatchResponse(
+                List.of(new SQSBatchResponse.BatchItemFailure("sqs-msg-4")));
+
+        assertEquals("{\"batchItemFailures\":[{\"itemIdentifier\":\"sqs-msg-4\"}]}",
+                new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(response));
     }
 
     private static SQSMessage msg(String id, String body) {
