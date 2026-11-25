@@ -89,7 +89,7 @@ public class HotelHandler implements RequestHandler<Map<String, Object>, HotelRe
             updateStatusToCancelledAndOutbox(bookingId, hotelNumber, userEmail);
         } catch (TransactionCanceledException e) {
             // the update is item 0 and conditioned on the row existing: no row means this step never booked anything
-            if (!"ConditionalCheckFailed".equals(e.cancellationReasons().get(0).code())) throw e;
+            if (!e.hasCancellationReasons() || !"ConditionalCheckFailed".equals(e.cancellationReasons().get(0).code())) throw e;
             context.getLogger().log("No hotel booking to cancel for Booking ID: " + bookingId);
             return new HotelResponse(bookingId, "SUCCESS", "Nothing to cancel", null);
         }
