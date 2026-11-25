@@ -2,6 +2,7 @@ package com.travel.workers;
 
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.LambdaLogger;
+import com.amazonaws.services.lambda.runtime.events.SQSBatchResponse;
 import com.amazonaws.services.lambda.runtime.events.SQSEvent;
 import com.amazonaws.services.lambda.runtime.events.SQSEvent.SQSMessage;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,7 +12,10 @@ import software.amazon.awssdk.services.ses.SesClient;
 import software.amazon.awssdk.services.ses.model.SendEmailRequest;
 import software.amazon.awssdk.services.ses.model.SendEmailResponse;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -138,5 +142,56 @@ public class NotificationConsumerHandlerTest {
                 .thenThrow(new RuntimeException("SES quota exceeded"));
 
         assertThrows(RuntimeException.class, () -> handler.handleRequest(event, context));
+    }
+
+    private static SQSMessage msg(String id, String body) {
+        SQSMessage m = new SQSMessage();
+        m.setMessageId(id);
+        m.setBody(body);
+        return m;
+    }
+
+    private long emailsTo(String addr) {
+        ArgumentCaptor<SendEmailRequest> c = ArgumentCaptor.forClass(SendEmailRequest.class);
+        verify(sesClient, atLeast(0)).sendEmail(c.capture());
+        return c.getAllValues().stream().filter(r -> r.destination().toAddresses().contains(addr)).count();
+    }
+
+    @Test
+    void poisonMessageIsTheOnlyOneRedelivered() {
+        NotificationConsumerHandler handler = new NotificationConsumerHandler(sesClient, FROM_EMAIL);
+        when(sesClient.sendEmail(any(SendEmailRequest.class)))
+                .thenReturn(SendEmailResponse.builder().messageId("ses-out").build());
+
+        List<SQSMessage> inFlight = new ArrayList<>(List.of(
+                msg("m1", "{\"bookingId\":\"b1\",\"userEmail\":\"a@x.com\"}"),
+                msg("m2", "not-json"),
+                msg("m3", "{\"bookingId\":\"b3\",\"userEmail\":\"c@x.com\"}")));
+        List<String> lastReported = List.of();
+
+        // Simulate Lambda with maxReceiveCount 3: a throw redelivers the whole batch,
+        // a batch response redelivers only the reported messageIds.
+        for (int receive = 1; receive <= 3 && !inFlight.isEmpty(); receive++) {
+            SQSEvent event = new SQSEvent();
+            event.setRecords(inFlight);
+            List<String> failed;
+            try {
+                Object result = handler.handleRequest(event, context);
+                failed = result instanceof SQSBatchResponse
+                        ? ((SQSBatchResponse) result).getBatchItemFailures().stream()
+                                .map(SQSBatchResponse.BatchItemFailure::getItemIdentifier)
+                                .collect(Collectors.toList())
+                        : List.of();
+            } catch (RuntimeException e) {
+                failed = inFlight.stream().map(SQSMessage::getMessageId).collect(Collectors.toList());
+            }
+            List<String> retry = failed;
+            inFlight.removeIf(m -> !retry.contains(m.getMessageId()));
+            lastReported = failed;
+        }
+
+        assertEquals(1, emailsTo("a@x.com"), "a@x.com emails after 3 receives");
+        assertEquals(1, emailsTo("c@x.com"), "c@x.com emails after 3 receives");
+        assertEquals(List.of("m2"), lastReported, "only the poison message is reported failed");
     }
 }
