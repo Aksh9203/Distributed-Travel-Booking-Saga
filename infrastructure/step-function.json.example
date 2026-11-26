@@ -87,6 +87,25 @@
         "flightNumber.$": "$.flightResult.flightNumber"
       },
       "ResultPath": "$.undoFlightResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 1,
+          "BackoffRate": 2,
+          "MaxAttempts": 6
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Refund Payment",
+          "ResultPath": "$.compensationError"
+        }
+      ],
       "Next": "Refund Payment"
     },
     "Refund Payment": {
@@ -100,7 +119,42 @@
         "amount.$": "$.amount"
       },
       "ResultPath": "$.refundPaymentResult",
-      "Next": "Saga Fail"
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 1,
+          "BackoffRate": 2,
+          "MaxAttempts": 6
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Compensation Failed",
+          "ResultPath": "$.compensationError"
+        }
+      ],
+      "Next": "Check Compensation"
+    },
+    "Check Compensation": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.compensationError",
+          "IsPresent": true,
+          "Next": "Compensation Failed"
+        }
+      ],
+      "Default": "Saga Fail"
+    },
+    "Compensation Failed": {
+      "Type": "Fail",
+      "Cause": "Compensation could not complete - manual reconciliation required",
+      "Error": "CompensationFailed"
     },
     "Saga Fail": {
       "Type": "Fail",
