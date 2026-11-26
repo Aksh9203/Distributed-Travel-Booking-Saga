@@ -2,6 +2,7 @@ package com.travel.workers;
 
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
+import com.amazonaws.services.lambda.runtime.events.SQSBatchResponse;
 import com.amazonaws.services.lambda.runtime.events.SQSEvent;
 import com.amazonaws.services.lambda.runtime.events.SQSEvent.SQSMessage;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -16,12 +17,15 @@ import software.amazon.awssdk.services.ses.model.Message;
 import software.amazon.awssdk.services.ses.model.SendEmailRequest;
 import software.amazon.awssdk.services.ses.model.SendEmailResponse;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Asynchronous Notification Consumer Lambda that polls SQS messages,
  * parses Outbox event payloads (unwrapping SNS envelopes if needed),
  * and triggers AWS SES to dispatch transactional confirmation emails to users.
  */
-public class NotificationConsumerHandler implements RequestHandler<SQSEvent, String> {
+public class NotificationConsumerHandler implements RequestHandler<SQSEvent, SQSBatchResponse> {
 
     private final SesClient sesClient;
     private final String fromEmail;
@@ -42,15 +46,15 @@ public class NotificationConsumerHandler implements RequestHandler<SQSEvent, Str
     }
 
     @Override
-    public String handleRequest(SQSEvent sqsEvent, Context context) {
+    public SQSBatchResponse handleRequest(SQSEvent sqsEvent, Context context) {
         if (sqsEvent == null || sqsEvent.getRecords() == null || sqsEvent.getRecords().isEmpty()) {
             if (context != null && context.getLogger() != null) {
                 context.getLogger().log("No records received in SQS event.");
             }
-            return "SUCCESS: 0 messages processed";
+            return new SQSBatchResponse(new ArrayList<>());
         }
 
-        int sentCount = 0;
+        List<SQSBatchResponse.BatchItemFailure> failures = new ArrayList<>();
 
         for (SQSMessage message : sqsEvent.getRecords()) {
             try {
@@ -78,18 +82,17 @@ public class NotificationConsumerHandler implements RequestHandler<SQSEvent, Str
                 }
 
                 sendEmail(userEmail, bookingId, eventType, destination, status, payloadNode, context);
-                sentCount++;
 
             } catch (Exception e) {
                 if (context != null && context.getLogger() != null) {
                     context.getLogger().log("Error processing SQS record " + message.getMessageId() + ": " + e.getMessage());
                 }
-                // Throwing exception lets SQS retry and eventually route to Dead Letter Queue (DLQ) after max retries
-                throw new RuntimeException("Failed to process SQS notification for message " + message.getMessageId(), e);
+                // Only this message is retried and, after maxReceiveCount, dead-lettered (needs ReportBatchItemFailures)
+                failures.add(new SQSBatchResponse.BatchItemFailure(message.getMessageId()));
             }
         }
 
-        return "SUCCESS: " + sentCount + " emails sent";
+        return new SQSBatchResponse(failures);
     }
 
     /**
@@ -116,24 +119,24 @@ public class NotificationConsumerHandler implements RequestHandler<SQSEvent, Str
         htmlBody.append("<p>Hello,</p>");
         htmlBody.append("<p>Here is the latest update on your travel booking:</p>");
         htmlBody.append("<ul>");
-        htmlBody.append("<li><strong>Booking ID:</strong> ").append(bookingId).append("</li>");
+        htmlBody.append("<li><strong>Booking ID:</strong> ").append(escapeHtml(bookingId)).append("</li>");
         if (eventType != null) {
-            htmlBody.append("<li><strong>Event:</strong> ").append(eventType).append("</li>");
+            htmlBody.append("<li><strong>Event:</strong> ").append(escapeHtml(eventType)).append("</li>");
         }
         if (status != null) {
-            htmlBody.append("<li><strong>Status:</strong> ").append(status).append("</li>");
+            htmlBody.append("<li><strong>Status:</strong> ").append(escapeHtml(status)).append("</li>");
         }
         if (destination != null) {
-            htmlBody.append("<li><strong>Destination:</strong> ").append(destination).append("</li>");
+            htmlBody.append("<li><strong>Destination:</strong> ").append(escapeHtml(destination)).append("</li>");
         }
         if (payloadNode.has("flightNumber")) {
-            htmlBody.append("<li><strong>Flight Number:</strong> ").append(payloadNode.get("flightNumber").asText()).append("</li>");
+            htmlBody.append("<li><strong>Flight Number:</strong> ").append(escapeHtml(payloadNode.get("flightNumber").asText())).append("</li>");
         }
         if (payloadNode.has("hotelNumber")) {
-            htmlBody.append("<li><strong>Hotel Reference:</strong> ").append(payloadNode.get("hotelNumber").asText()).append("</li>");
+            htmlBody.append("<li><strong>Hotel Reference:</strong> ").append(escapeHtml(payloadNode.get("hotelNumber").asText())).append("</li>");
         }
         if (payloadNode.has("amount")) {
-            htmlBody.append("<li><strong>Amount:</strong> $").append(payloadNode.get("amount").asText()).append("</li>");
+            htmlBody.append("<li><strong>Amount:</strong> $").append(escapeHtml(payloadNode.get("amount").asText())).append("</li>");
         }
         htmlBody.append("</ul>");
         htmlBody.append("<p>Thank you for choosing our travel services!</p>");
@@ -168,5 +171,16 @@ public class NotificationConsumerHandler implements RequestHandler<SQSEvent, Str
             return node.get(fieldName).asText();
         }
         return null;
+    }
+
+    private static String escapeHtml(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
     }
 }

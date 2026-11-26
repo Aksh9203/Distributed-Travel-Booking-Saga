@@ -1,5 +1,6 @@
 # ✈️ Serverless Distributed Travel Booking System
 
+[![CI](https://github.com/Aksh9203/Distributed-Travel-Booking-Saga/actions/workflows/ci.yml/badge.svg)](https://github.com/Aksh9203/Distributed-Travel-Booking-Saga/actions/workflows/ci.yml)
 [![Java](https://img.shields.io/badge/Java-21-orange?logo=openjdk)](https://openjdk.org/)
 [![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.0-brightgreen?logo=springboot)](https://spring.io/projects/spring-boot)
 [![AWS Serverless](https://img.shields.io/badge/AWS-Serverless-232F3E?logo=amazon-aws)](https://aws.amazon.com/)

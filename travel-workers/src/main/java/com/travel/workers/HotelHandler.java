@@ -54,9 +54,11 @@ public class HotelHandler implements RequestHandler<Map<String, Object>, HotelRe
 
         if ("CANCEL".equalsIgnoreCase(action)) {
             return cancelHotel(input, context);
-        } else {
+        }
+        if ("BOOK".equalsIgnoreCase(action)) {
             return bookHotel(input, context);
         }
+        throw new IllegalArgumentException("Unknown hotel action: " + action);
     }
 
     private HotelResponse bookHotel(Map<String, Object> input, Context context) {

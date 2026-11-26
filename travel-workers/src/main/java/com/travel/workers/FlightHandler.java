@@ -54,9 +54,11 @@ public class FlightHandler implements RequestHandler<Map<String, Object>, Flight
 
         if ("CANCEL".equalsIgnoreCase(action)) {
             return cancelFlight(input, context);
-        } else {
+        }
+        if ("BOOK".equalsIgnoreCase(action)) {
             return bookFlight(input, context);
         }
+        throw new IllegalArgumentException("Unknown flight action: " + action);
     }
 
     private FlightResponse bookFlight(Map<String, Object> input, Context context) {
