@@ -9,6 +9,7 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.Put;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
 import software.amazon.awssdk.services.dynamodb.model.Update;
 
 import java.util.Collections;
@@ -85,7 +86,14 @@ public class FlightHandler implements RequestHandler<Map<String, Object>, Flight
 
         context.getLogger().log("Compensating Transaction: Cancelling Flight for Booking ID: " + bookingId);
 
-        updateStatusToCancelledAndOutbox(bookingId, flightNumber, userEmail);
+        try {
+            updateStatusToCancelledAndOutbox(bookingId, flightNumber, userEmail);
+        } catch (TransactionCanceledException e) {
+            // the update is item 0 and conditioned on the row existing: no row means this step never booked anything
+            if (!e.hasCancellationReasons() || !"ConditionalCheckFailed".equals(e.cancellationReasons().get(0).code())) throw e;
+            context.getLogger().log("No flight booking to cancel for Booking ID: " + bookingId);
+            return new FlightResponse(bookingId, "SUCCESS", "Nothing to cancel", null);
+        }
         return new FlightResponse(bookingId, "SUCCESS", "Flight Cancelled (Compensated)", flightNumber);
     }
 
@@ -137,13 +145,14 @@ public class FlightHandler implements RequestHandler<Map<String, Object>, Flight
                 .tableName(tableName)
                 .key(key)
                 .updateExpression("SET #s = :newStatus")
+                .conditionExpression("attribute_exists(booking_id)")
                 .expressionAttributeNames(Collections.singletonMap("#s", "status"))
                 .expressionAttributeValues(Collections.singletonMap(":newStatus", AttributeValue.builder().s("CANCELLED").build()))
                 .build();
 
         Map<String, Object> outboxPayload = new HashMap<>();
         outboxPayload.put("bookingId", bookingId);
-        outboxPayload.put("flightNumber", flightNumber);
+        if (flightNumber != null) outboxPayload.put("flightNumber", flightNumber);
         if (userEmail != null) outboxPayload.put("userEmail", userEmail);
         outboxPayload.put("status", "CANCELLED");
         outboxPayload.put("eventType", "FLIGHT_CANCELLED");
