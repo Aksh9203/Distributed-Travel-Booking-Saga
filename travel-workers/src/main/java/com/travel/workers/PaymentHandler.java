@@ -11,6 +11,7 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
 import software.amazon.awssdk.services.dynamodb.model.Update;
 
+import java.math.BigDecimal;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -21,9 +22,9 @@ class PaymentResponse {
     public String status;
     public String message;
     public String transactionId;
-    public Integer amount;
+    public BigDecimal amount;
 
-    public PaymentResponse(String bookingId, String status, String message, String transactionId, Integer amount) {
+    public PaymentResponse(String bookingId, String status, String message, String transactionId, BigDecimal amount) {
         this.bookingId = bookingId;
         this.status = status;
         this.message = message;
@@ -64,11 +65,12 @@ public class PaymentHandler implements RequestHandler<Map<String, Object>, Payme
         String bookingId = (String) input.getOrDefault("bookingId", UUID.randomUUID().toString());
         String userId = (String) input.get("userId");
         String userEmail = (String) input.getOrDefault("userEmail", input.get("email"));
-        Integer amount = (Integer) input.getOrDefault("amount", 150);
+        // Any JSON number (travel-api sends a Double); toString keeps 100 as 100 and 100.5 exact.
+        BigDecimal amount = new BigDecimal(input.getOrDefault("amount", 150).toString());
 
         context.getLogger().log("Payment processing for: " + userId + ", bookingId: " + bookingId);
 
-        if (amount > 1000) {
+        if (amount.compareTo(BigDecimal.valueOf(1000)) > 0) {
             throw new RuntimeException("Amount must be less than 1000");
         }
 
@@ -82,7 +84,7 @@ public class PaymentHandler implements RequestHandler<Map<String, Object>, Payme
     private PaymentResponse paymentRefunded(Map<String, Object> input, Context context) {
         String bookingId = (String) input.get("bookingId");
         String transactionId = (String) input.get("transactionId");
-        Integer amount = (Integer) input.getOrDefault("amount", 0);
+        BigDecimal amount = new BigDecimal(input.getOrDefault("amount", 0).toString());
 
         context.getLogger().log("Compensating Transaction: Refunding Payment for Booking ID: " + bookingId);
 
@@ -90,7 +92,7 @@ public class PaymentHandler implements RequestHandler<Map<String, Object>, Payme
         return new PaymentResponse(bookingId, "SUCCESS", "PAYMENT REFUNDED", transactionId, amount);
     }
 
-    private void savePaymentAndOutbox(String bookingId, String userId, String userEmail, String txId, Integer amt, String status) {
+    private void savePaymentAndOutbox(String bookingId, String userId, String userEmail, String txId, BigDecimal amt, String status) {
         Map<String, AttributeValue> paymentItem = new HashMap<>();
         paymentItem.put("booking_id", AttributeValue.builder().s(bookingId).build());
 
@@ -130,7 +132,7 @@ public class PaymentHandler implements RequestHandler<Map<String, Object>, Payme
         dynamoDb.transactWriteItems(request);
     }
 
-    private void updateStatusToRefundedAndOutbox(String bookingId, String transactionId, Integer amount) {
+    private void updateStatusToRefundedAndOutbox(String bookingId, String transactionId, BigDecimal amount) {
         Map<String, AttributeValue> key = new HashMap<>();
         key.put("booking_id", AttributeValue.builder().s(bookingId).build());
 
