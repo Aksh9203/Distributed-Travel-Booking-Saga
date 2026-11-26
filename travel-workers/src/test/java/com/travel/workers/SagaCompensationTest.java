@@ -9,6 +9,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.CancellationReason;
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsResponse;
@@ -44,6 +46,13 @@ public class SagaCompensationTest {
         DynamoDbClient ddb = mock(DynamoDbClient.class);
         when(ddb.transactWriteItems(any(TransactWriteItemsRequest.class))).thenAnswer(inv -> {
             TransactWriteItemsRequest r = inv.getArgument(0);
+            // the only condition the handlers use; a failed check cancels the whole transaction, as in DynamoDB
+            List<CancellationReason> reasons = r.transactItems().stream().map(t -> CancellationReason.builder()
+                    .code(t.update() != null && "attribute_exists(booking_id)".equals(t.update().conditionExpression())
+                            && !db.getOrDefault(t.update().tableName(), Map.of()).containsKey(t.update().key().get("booking_id").s())
+                            ? "ConditionalCheckFailed" : "None").build()).collect(Collectors.toList());
+            if (reasons.stream().anyMatch(c -> !c.code().equals("None")))
+                throw TransactionCanceledException.builder().message("Transaction cancelled").cancellationReasons(reasons).build();
             for (TransactWriteItem t : r.transactItems()) {
                 if (t.put() != null) {
                     Map<String, AttributeValue> item = t.put().item();
@@ -69,9 +78,15 @@ public class SagaCompensationTest {
      * Minimal ASL interpreter for the subset this definition uses: Task (Parameters, ResultPath, Retry, Catch),
      * Choice (IsPresent), Fail, Succeed. failures[state] = how many attempts of that state throw before one succeeds.
      * shortcut: Retry/Catch match on States.ALL only and backoff is not slept, extend if the ASL names specific errors.
+     * States in failAfterCommit run their handler (committing its writes) and then fail, like a timeout after commit.
+     * A missing ".$" path throws out of run(): States.Runtime fails the execution and no Catch can handle it.
      * Returns "SUCCEEDED", "FAILED(<Error>)" for a Fail state, or "FAILED(States.TaskFailed)" for an uncaught error.
      */
     String run(Map<String, Object> input, Map<String, Integer> failures) throws Exception {
+        return run(input, failures, Set.of());
+    }
+
+    String run(Map<String, Object> input, Map<String, Integer> failures, Set<String> failAfterCommit) throws Exception {
         ObjectNode data = M.valueToTree(input);
         Map<String, Integer> remaining = new HashMap<>(failures);
         String cur = asl.get("StartAt").asText();
@@ -102,6 +117,7 @@ public class SagaCompensationTest {
                     if (remaining.merge(cur, -1, Integer::sum) >= 0)
                         throw new RuntimeException("injected transient error in " + cur);
                     Object out = handler.getClass().getMethod("handleRequest", Map.class, Context.class).invoke(handler, params, ctx);
+                    if (failAfterCommit.contains(cur)) throw new RuntimeException("injected failure after commit in " + cur);
                     data.set(field(s.get("ResultPath")), M.valueToTree(out));
                     error = null;
                     break;
@@ -148,6 +164,12 @@ public class SagaCompensationTest {
         return item == null ? "<none>" : item.get("status").s();
     }
 
+    List<String> outboxEvents(String bookingId) {
+        return db.getOrDefault(OutboxHelper.OUTBOX_TABLE_NAME, Map.of()).values().stream()
+                .filter(e -> e.get("bookingId").s().equals(bookingId)).map(e -> e.get("eventType").s())
+                .sorted().collect(Collectors.toList());
+    }
+
     /** States the execution ran work in or ended at; Choice states route only, so they are left out. */
     List<String> taskAndTerminalStates() {
         return path.stream().filter(n -> !asl.get("States").get(n).get("Type").asText().equals("Choice"))
@@ -155,9 +177,10 @@ public class SagaCompensationTest {
     }
 
     String outcome(String result, String id) {
-        System.out.println("path=" + path + " result=" + result);
-        return result + " path=" + path + " payment=" + status("Travel_Payments", id)
-                + " flight=" + status("Travel_Flights", id) + " hotel=" + status("Travel_Hotels", id);
+        String o = result + " path=" + path + " payment=" + status("Travel_Payments", id)
+                + " flight=" + status("Travel_Flights", id) + " hotel=" + status("Travel_Hotels", id) + " outbox=" + outboxEvents(id);
+        System.out.println("OUTCOME " + id + " " + o);
+        return o;
     }
 
     @Test
@@ -208,9 +231,11 @@ public class SagaCompensationTest {
         String r = run(input("b6", "Mars", 200), Map.of());
         String why = outcome(r, "b6");
         assertEquals("FAILED(SagaRollbackComplete)", r, why);
-        assertEquals(List.of("Process Payment", "Book Flight", "Refund Payment", "Saga Fail"), taskAndTerminalStates(), why);
+        assertEquals(List.of("Process Payment", "Book Flight", "Undo Flight", "Refund Payment", "Saga Fail"),
+                taskAndTerminalStates(), why);
         assertEquals("REFUNDED", status("Travel_Payments", "b6"), why);
-        assertEquals("<none>", status("Travel_Flights", "b6"), why);
+        assertEquals("<none>", status("Travel_Flights", "b6"), why); // undoing a flight that was never booked writes nothing
+        assertFalse(outboxEvents("b6").contains("FLIGHT_CANCELLED"), why);
     }
 
     @Test
@@ -218,10 +243,40 @@ public class SagaCompensationTest {
         String r = run(input("b7", "Atlantis", 200), Map.of());
         String why = outcome(r, "b7");
         assertEquals("FAILED(SagaRollbackComplete)", r, why);
-        assertEquals(List.of("Process Payment", "Book Flight", "Book Hotel", "Undo Flight", "Refund Payment", "Saga Fail"),
-                taskAndTerminalStates(), why);
+        assertEquals(List.of("Process Payment", "Book Flight", "Book Hotel", "Undo Hotel", "Undo Flight", "Refund Payment",
+                "Saga Fail"), taskAndTerminalStates(), why);
         assertEquals("REFUNDED", status("Travel_Payments", "b7"), why);
         assertEquals("CANCELLED", status("Travel_Flights", "b7"), why);
         assertEquals("<none>", status("Travel_Hotels", "b7"), why);
+        assertFalse(outboxEvents("b7").contains("HOTEL_CANCELLED"), why);
+    }
+
+    @Test
+    void flightCommittedThenTaskFailsIsCancelled() throws Exception {
+        String r = run(input("b8", "Paris", 200), Map.of(), Set.of("Book Flight"));
+        String why = outcome(r, "b8");
+        assertEquals("FAILED(SagaRollbackComplete)", r, why);
+        assertEquals("CANCELLED", status("Travel_Flights", "b8"), why);
+        assertEquals("REFUNDED", status("Travel_Payments", "b8"), why);
+    }
+
+    @Test
+    void hotelCommittedThenTaskFailsIsCancelled() throws Exception {
+        String r = run(input("b9", "Paris", 200), Map.of(), Set.of("Book Hotel"));
+        String why = outcome(r, "b9");
+        assertEquals("FAILED(SagaRollbackComplete)", r, why);
+        assertEquals("CANCELLED", status("Travel_Hotels", "b9"), why);
+        assertEquals("CANCELLED", status("Travel_Flights", "b9"), why);
+        assertEquals("REFUNDED", status("Travel_Payments", "b9"), why);
+    }
+
+    @Test
+    void permanentUndoHotelFailureStillUndoesFlightRefundsAndEndsCompensationFailed() throws Exception {
+        String r = run(input("b10", "Paris", 200), Map.of("Undo Hotel", PERMANENT), Set.of("Book Hotel"));
+        String why = outcome(r, "b10");
+        assertEquals("FAILED(CompensationFailed)", r, why);
+        assertEquals("CONFIRMED", status("Travel_Hotels", "b10"), why);
+        assertEquals("CANCELLED", status("Travel_Flights", "b10"), why);
+        assertEquals("REFUNDED", status("Travel_Payments", "b10"), why);
     }
 }

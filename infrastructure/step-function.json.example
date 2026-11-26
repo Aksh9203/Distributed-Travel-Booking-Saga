@@ -47,7 +47,7 @@
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Next": "Refund Payment",
+          "Next": "Undo Flight",
           "ResultPath": "$.errorInfo"
         }
       ]
@@ -69,7 +69,7 @@
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Next": "Undo Flight",
+          "Next": "Undo Hotel",
           "ResultPath": "$.errorInfo"
         }
       ]
@@ -77,14 +77,43 @@
     "Booking Success": {
       "Type": "Succeed"
     },
+    "Undo Hotel": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:<AWS_ACCOUNT_ID>:function:TravelHotelFunction",
+      "Parameters": {
+        "action": "CANCEL",
+        "userEmail.$": "$.userEmail",
+        "bookingId.$": "$.bookingId"
+      },
+      "ResultPath": "$.undoHotelResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 1,
+          "BackoffRate": 2,
+          "MaxAttempts": 6
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Undo Flight",
+          "ResultPath": "$.compensationError"
+        }
+      ],
+      "Next": "Undo Flight"
+    },
     "Undo Flight": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:us-east-1:<AWS_ACCOUNT_ID>:function:TravelFlightFunction",
       "Parameters": {
         "action": "CANCEL",
         "userEmail.$": "$.userEmail",
-        "bookingId.$": "$.bookingId",
-        "flightNumber.$": "$.flightResult.flightNumber"
+        "bookingId.$": "$.bookingId"
       },
       "ResultPath": "$.undoFlightResult",
       "Retry": [
