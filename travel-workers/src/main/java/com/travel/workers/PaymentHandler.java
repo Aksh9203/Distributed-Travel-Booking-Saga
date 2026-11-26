@@ -56,9 +56,11 @@ public class PaymentHandler implements RequestHandler<Map<String, Object>, Payme
 
         if ("REFUND".equalsIgnoreCase(action)) {
             return paymentRefunded(input, context);
-        } else {
+        }
+        if ("PAY".equalsIgnoreCase(action)) {
             return paymentSuccessful(input, context);
         }
+        throw new IllegalArgumentException("Unknown payment action: " + action);
     }
 
     private PaymentResponse paymentSuccessful(Map<String, Object> input, Context context) {
