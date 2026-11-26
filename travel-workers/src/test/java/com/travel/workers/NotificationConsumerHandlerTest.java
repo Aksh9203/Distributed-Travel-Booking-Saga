@@ -107,6 +107,38 @@ public class NotificationConsumerHandlerTest {
     }
 
     @Test
+    void testHtmlBodyEscapesPayloadFields() {
+        NotificationConsumerHandler handler = new NotificationConsumerHandler(sesClient, FROM_EMAIL);
+
+        String jsonPayload = "{" +
+                "\"bookingId\":\"bk-xss\"," +
+                "\"userEmail\":\"traveler@domain.com\"," +
+                "\"destination\":\"<img src=x onerror=alert(1)>\"," +
+                "\"flightNumber\":\"<img src=y>\"" +
+                "}";
+
+        SQSMessage sqsMessage = new SQSMessage();
+        sqsMessage.setMessageId("sqs-msg-xss");
+        sqsMessage.setBody(jsonPayload);
+
+        SQSEvent event = new SQSEvent();
+        event.setRecords(Collections.singletonList(sqsMessage));
+
+        when(sesClient.sendEmail(any(SendEmailRequest.class)))
+                .thenReturn(SendEmailResponse.builder().messageId("ses-out-xss").build());
+
+        handler.handleRequest(event, context);
+
+        ArgumentCaptor<SendEmailRequest> captor = ArgumentCaptor.forClass(SendEmailRequest.class);
+        verify(sesClient).sendEmail(captor.capture());
+
+        String html = captor.getValue().message().body().html().data();
+        assertFalse(html.contains("<img"), html);
+        assertTrue(html.contains("&lt;img src=x onerror=alert(1)&gt;"), html);
+        assertTrue(html.contains("&lt;img src=y&gt;"), html);
+    }
+
+    @Test
     void testMissingEmailSkipsSend() {
         NotificationConsumerHandler handler = new NotificationConsumerHandler(sesClient, FROM_EMAIL);
 

@@ -119,24 +119,24 @@ public class NotificationConsumerHandler implements RequestHandler<SQSEvent, SQS
         htmlBody.append("<p>Hello,</p>");
         htmlBody.append("<p>Here is the latest update on your travel booking:</p>");
         htmlBody.append("<ul>");
-        htmlBody.append("<li><strong>Booking ID:</strong> ").append(bookingId).append("</li>");
+        htmlBody.append("<li><strong>Booking ID:</strong> ").append(escapeHtml(bookingId)).append("</li>");
         if (eventType != null) {
-            htmlBody.append("<li><strong>Event:</strong> ").append(eventType).append("</li>");
+            htmlBody.append("<li><strong>Event:</strong> ").append(escapeHtml(eventType)).append("</li>");
         }
         if (status != null) {
-            htmlBody.append("<li><strong>Status:</strong> ").append(status).append("</li>");
+            htmlBody.append("<li><strong>Status:</strong> ").append(escapeHtml(status)).append("</li>");
         }
         if (destination != null) {
-            htmlBody.append("<li><strong>Destination:</strong> ").append(destination).append("</li>");
+            htmlBody.append("<li><strong>Destination:</strong> ").append(escapeHtml(destination)).append("</li>");
         }
         if (payloadNode.has("flightNumber")) {
-            htmlBody.append("<li><strong>Flight Number:</strong> ").append(payloadNode.get("flightNumber").asText()).append("</li>");
+            htmlBody.append("<li><strong>Flight Number:</strong> ").append(escapeHtml(payloadNode.get("flightNumber").asText())).append("</li>");
         }
         if (payloadNode.has("hotelNumber")) {
-            htmlBody.append("<li><strong>Hotel Reference:</strong> ").append(payloadNode.get("hotelNumber").asText()).append("</li>");
+            htmlBody.append("<li><strong>Hotel Reference:</strong> ").append(escapeHtml(payloadNode.get("hotelNumber").asText())).append("</li>");
         }
         if (payloadNode.has("amount")) {
-            htmlBody.append("<li><strong>Amount:</strong> $").append(payloadNode.get("amount").asText()).append("</li>");
+            htmlBody.append("<li><strong>Amount:</strong> $").append(escapeHtml(payloadNode.get("amount").asText())).append("</li>");
         }
         htmlBody.append("</ul>");
         htmlBody.append("<p>Thank you for choosing our travel services!</p>");
@@ -171,5 +171,16 @@ public class NotificationConsumerHandler implements RequestHandler<SQSEvent, SQS
             return node.get(fieldName).asText();
         }
         return null;
+    }
+
+    private static String escapeHtml(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
     }
 }
