@@ -87,10 +87,11 @@ public class PaymentHandler implements RequestHandler<Map<String, Object>, Payme
         String bookingId = (String) input.get("bookingId");
         String transactionId = (String) input.get("transactionId");
         BigDecimal amount = new BigDecimal(input.getOrDefault("amount", 0).toString());
+        String userEmail = (String) input.getOrDefault("userEmail", input.get("email"));
 
         context.getLogger().log("Compensating Transaction: Refunding Payment for Booking ID: " + bookingId);
 
-        updateStatusToRefundedAndOutbox(bookingId, transactionId, amount);
+        updateStatusToRefundedAndOutbox(bookingId, transactionId, amount, userEmail);
         return new PaymentResponse(bookingId, "SUCCESS", "PAYMENT REFUNDED", transactionId, amount);
     }
 
@@ -134,7 +135,7 @@ public class PaymentHandler implements RequestHandler<Map<String, Object>, Payme
         dynamoDb.transactWriteItems(request);
     }
 
-    private void updateStatusToRefundedAndOutbox(String bookingId, String transactionId, BigDecimal amount) {
+    private void updateStatusToRefundedAndOutbox(String bookingId, String transactionId, BigDecimal amount, String userEmail) {
         Map<String, AttributeValue> key = new HashMap<>();
         key.put("booking_id", AttributeValue.builder().s(bookingId).build());
 
@@ -150,6 +151,7 @@ public class PaymentHandler implements RequestHandler<Map<String, Object>, Payme
         outboxPayload.put("bookingId", bookingId);
         outboxPayload.put("transactionId", transactionId);
         outboxPayload.put("amount", amount);
+        if (userEmail != null) outboxPayload.put("userEmail", userEmail);
         outboxPayload.put("status", "REFUNDED");
         outboxPayload.put("eventType", "PAYMENT_REFUNDED");
 

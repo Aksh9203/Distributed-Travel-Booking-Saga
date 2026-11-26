@@ -9,6 +9,7 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.Put;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
 import software.amazon.awssdk.services.dynamodb.model.Update;
 
 import java.util.Collections;
@@ -82,10 +83,18 @@ public class HotelHandler implements RequestHandler<Map<String, Object>, HotelRe
     private HotelResponse cancelHotel(Map<String, Object> input, Context context) {
         String bookingId = (String) input.get("bookingId");
         String hotelNumber = (String) input.getOrDefault("hotelNumber", (String) input.get("flightNumber"));
+        String userEmail = (String) input.getOrDefault("userEmail", input.get("email"));
 
         context.getLogger().log("Compensating Transaction: Cancelling Hotel for Booking ID: " + bookingId);
 
-        updateStatusToCancelledAndOutbox(bookingId, hotelNumber);
+        try {
+            updateStatusToCancelledAndOutbox(bookingId, hotelNumber, userEmail);
+        } catch (TransactionCanceledException e) {
+            // the update is item 0 and conditioned on the row existing: no row means this step never booked anything
+            if (!e.hasCancellationReasons() || !"ConditionalCheckFailed".equals(e.cancellationReasons().get(0).code())) throw e;
+            context.getLogger().log("No hotel booking to cancel for Booking ID: " + bookingId);
+            return new HotelResponse(bookingId, "SUCCESS", "Nothing to cancel", null);
+        }
         return new HotelResponse(bookingId, "SUCCESS", "Hotel Cancelled (Compensated)", hotelNumber);
     }
 
@@ -129,7 +138,7 @@ public class HotelHandler implements RequestHandler<Map<String, Object>, HotelRe
         dynamoDb.transactWriteItems(request);
     }
 
-    private void updateStatusToCancelledAndOutbox(String bookingId, String hotelNumber) {
+    private void updateStatusToCancelledAndOutbox(String bookingId, String hotelNumber, String userEmail) {
         Map<String, AttributeValue> key = new HashMap<>();
         key.put("booking_id", AttributeValue.builder().s(bookingId).build());
 
@@ -137,13 +146,15 @@ public class HotelHandler implements RequestHandler<Map<String, Object>, HotelRe
                 .tableName(tableName)
                 .key(key)
                 .updateExpression("SET #s = :newStatus")
+                .conditionExpression("attribute_exists(booking_id)")
                 .expressionAttributeNames(Collections.singletonMap("#s", "status"))
                 .expressionAttributeValues(Collections.singletonMap(":newStatus", AttributeValue.builder().s("CANCELLED").build()))
                 .build();
 
         Map<String, Object> outboxPayload = new HashMap<>();
         outboxPayload.put("bookingId", bookingId);
-        outboxPayload.put("hotelNumber", hotelNumber);
+        if (hotelNumber != null) outboxPayload.put("hotelNumber", hotelNumber);
+        if (userEmail != null) outboxPayload.put("userEmail", userEmail);
         outboxPayload.put("status", "CANCELLED");
         outboxPayload.put("eventType", "HOTEL_CANCELLED");
 
