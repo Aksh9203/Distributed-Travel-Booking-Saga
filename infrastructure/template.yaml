@@ -147,7 +147,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "TravelNotificationDLQAlarm-${Environment}"
-      AlarmDescription: "Alerts when messages fail 3 retry attempts and enter the DLQ"
+      AlarmDescription: "Messages reached the DLQ after 3 failed deliveries. No alarm action is configured."
       MetricName: ApproximateNumberOfMessagesVisible
       Namespace: AWS/SQS
       Dimensions:

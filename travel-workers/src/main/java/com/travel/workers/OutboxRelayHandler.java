@@ -18,7 +18,8 @@ import java.util.Map;
 /**
  * Background Relay Lambda function that processes DynamoDB Streams from the TravelOutbox table.
  * It parses NEW_IMAGE records and publishes event payloads to the central SNS Topic,
- * ensuring reliable at-least-once asynchronous event delivery.
+ * Delivery is at-least-once while Lambda retries a failed batch. After the stream mapping's
+ * retries run out, the record is dropped unless the mapping has an OnFailure destination.
  */
 public class OutboxRelayHandler implements RequestHandler<DynamodbEvent, String> {
 
