@@ -74,7 +74,7 @@ class PaymentAmountTest {
     void payDeclinesDecimalAboveLimit() {
         RuntimeException e = assertThrows(RuntimeException.class,
                 () -> run("{\"bookingId\":\"bk-1\",\"userId\":\"u1\",\"amount\":1000.5}"));
-        assertEquals("Amount must be less than 1000", e.getMessage());
+        assertEquals("Amount must not exceed 1000", e.getMessage());
         verifyNoInteractions(dynamoDb);
     }
 

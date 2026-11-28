@@ -73,7 +73,7 @@ public class PaymentHandler implements RequestHandler<Map<String, Object>, Payme
         context.getLogger().log("Payment processing for: " + userId + ", bookingId: " + bookingId);
 
         if (amount.compareTo(BigDecimal.valueOf(1000)) > 0) {
-            throw new RuntimeException("Amount must be less than 1000");
+            throw new RuntimeException("Amount must not exceed 1000");
         }
 
         String transactionId = "TX-" + UUID.randomUUID().toString();

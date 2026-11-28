@@ -1,357 +1,257 @@
-# ✈️ Serverless Distributed Travel Booking System
+# Distributed travel booking saga
 
 [![CI](https://github.com/Aksh9203/Distributed-Travel-Booking-Saga/actions/workflows/ci.yml/badge.svg)](https://github.com/Aksh9203/Distributed-Travel-Booking-Saga/actions/workflows/ci.yml)
 [![Java](https://img.shields.io/badge/Java-21-orange?logo=openjdk)](https://openjdk.org/)
-[![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.0-brightgreen?logo=springboot)](https://spring.io/projects/spring-boot)
-[![AWS Serverless](https://img.shields.io/badge/AWS-Serverless-232F3E?logo=amazon-aws)](https://aws.amazon.com/)
+[![Spring Boot](https://img.shields.io/badge/Spring_Boot-4.0-brightgreen?logo=springboot)](https://spring.io/projects/spring-boot)
 [![AWS Step Functions](https://img.shields.io/badge/AWS-Step_Functions-FF4F8B?logo=amazonaws)](https://aws.amazon.com/step-functions/)
 [![DynamoDB](https://img.shields.io/badge/Amazon-DynamoDB-4053D6?logo=amazondynamodb)](https://aws.amazon.com/dynamodb/)
-[![SNS & SQS](https://img.shields.io/badge/AWS-SNS%20%26%20SQS-CC2264?logo=amazonsqs)](https://aws.amazon.com/sqs/)
-[![SES](https://img.shields.io/badge/AWS-SES-DD344C?logo=amazon-simple-email-service)](https://aws.amazon.com/ses/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A production-grade, fault-tolerant distributed transaction system built on AWS. This project solves the **distributed data consistency** and **dual-write** challenges across serverless microservices by combining the **Payment-First Hybrid Saga Pattern** with the **Transactional Outbox Pattern**.
+A travel booking that runs as three AWS Lambda functions: one takes the payment, one books the flight, and one books the hotel. AWS Step Functions calls them in that order. When a later step fails, the state machine undoes the steps that already finished.
 
----
+Each step writes its business record and an event record in one DynamoDB transaction. A separate pipeline reads the event records and emails the customer through SNS, SQS, and SES.
 
-## 📑 Table of Contents
-- [1. Problem Statement](#1-problem-statement)
-- [2. System Architecture](#2-system-architecture)
-- [3. Architectural Design Patterns](#3-architectural-design-patterns)
-  - [A. Payment-First Saga Pattern](#a-payment-first-saga-pattern)
-  - [B. Transactional Outbox Pattern](#b-transactional-outbox-pattern)
-  - [C. Decoupled Asynchronous Notifications](#c-decoupled-asynchronous-notifications)
-  - [D. Resilience & DLQ Redrive Policies](#d-resilience--dlq-redrive-policies)
-- [4. Repository Structure](#4-repository-structure)
-- [5. Component Breakdown](#5-component-breakdown)
-- [6. Saga Workflow & Compensation Logic](#6-saga-workflow--compensation-logic)
-- [7. Chaos Engineering & Failure Triggers](#7-chaos-engineering--failure-triggers)
-- [8. Deployment Guide](#8-deployment-guide)
-- [9. Testing Guide](#9-testing-guide)
-  - [Automated Unit Testing](#automated-unit-testing)
-  - [Manual End-to-End Testing](#manual-end-to-end-testing)
-- [10. DLQ Monitoring & Automated Redrive](#10-dlq-monitoring--automated-redrive)
+The payment, flight, and hotel services are simulations. No card is charged and no supplier is called. Fixed inputs make a step fail, so you can watch a rollback. See [Failure triggers](#failure-triggers).
 
----
+The live deployment in `us-east-1` was created by hand in the AWS console. The AWS SAM template in `infrastructure/template.yaml` has never been deployed. See [Known limitations](#known-limitations).
 
-## 1. Problem Statement
+## Contents
 
-In monolithic architectures, a travel booking (Flight + Hotel + Payment) is managed through local ACID transactions within a single relational database. In a distributed microservices architecture:
-1. **Cross-Service Consistency**: Microservices maintain independent databases (`Travel_Payments`, `Travel_Flights`, `Travel_Hotels`) and cannot share distributed database locks without introducing severe bottlenecks and single points of failure.
-2. **The Dual-Write Problem**: Updating local state in DynamoDB and sending a notification via email/messaging in two separate steps risks partial failures. If a crash occurs after updating the database but before publishing the event, downstream subscribers are left out of sync.
-3. **Financial & Inventory Risk**: Reserving flights and hotels before securing payment risks locking up supplier inventory for transactions that subsequently fail due to insufficient funds or card declines.
+- [The problem](#the-problem)
+- [Architecture](#architecture)
+- [How the saga runs](#how-the-saga-runs)
+- [How events become emails](#how-events-become-emails)
+- [Failure triggers](#failure-triggers)
+- [Known limitations](#known-limitations)
+- [Repository layout](#repository-layout)
+- [Build and test](#build-and-test)
+- [Run travel-api](#run-travel-api)
+- [Deploy](#deploy)
+- [License](#license)
 
-This architecture resolves all three challenges through **orchestrated compensation (Saga)** and **atomic transactional outbox event streams**.
+## The problem
 
----
+One booking touches three services, and each service owns its own table: `Travel_Payments`, `Travel_Flights`, and `Travel_Hotels`. No single database transaction covers all three. This design has to handle three problems:
 
-## 2. System Architecture
+1. **Partial bookings.** The payment can succeed and the hotel can then fail. Something has to refund the payment and cancel the flight.
+2. **Dual writes.** A service that saves a record and then publishes an event can crash between the two calls. The record then exists, but no one hears about it.
+3. **Reservations for unpaid bookings.** If the flight and hotel are booked before the payment, a declined card leaves reservations that someone has to cancel.
+
+The design answers the first problem with a saga, the second with a transactional outbox, and the third by taking the payment first.
+
+## Architecture
 
 ```mermaid
 flowchart TD
-    Client["Client / API Gateway / Spring Boot"] -->|1. Start Saga| SFN["AWS Step Functions (Orchestrator)"]
+    Client["travel-api (Spring Boot)"] -->|"POST with x-api-key"| APIGW["API Gateway"]
+    APIGW -->|"Start execution"| SFN["Step Functions: TravelBookingSaga"]
 
-    subgraph Synchronous Booking Saga
-        SFN -->|Step 1: PAY| PaymentLambda["Payment Lambda (TravelPaymentFunction)"]
-        PaymentLambda -->|TransactWriteItems| DDB_Pay[("Travel_Payments")]
-        PaymentLambda -->|TransactWriteItems| DDB_Outbox[("TravelOutbox")]
-
-        SFN -->|Step 2: BOOK| FlightLambda["Flight Lambda (TravelFlightFunction)"]
-        FlightLambda -->|TransactWriteItems| DDB_Flight[("Travel_Flights")]
-        FlightLambda -->|TransactWriteItems| DDB_Outbox
-
-        SFN -->|Step 3: BOOK| HotelLambda["Hotel Lambda (TravelHotelFunction)"]
-        HotelLambda -->|TransactWriteItems| DDB_Hotel[("Travel_Hotels")]
-        HotelLambda -->|TransactWriteItems| DDB_Outbox
+    subgraph Booking["Booking path (synchronous)"]
+        SFN -->|"PAY"| Pay["TravelPaymentFunction"]
+        SFN -->|"BOOK"| Flight["TravelFlightFunction"]
+        SFN -->|"BOOK"| Hotel["TravelHotelFunction"]
+        Pay -->|"TransactWriteItems"| PayT[("Travel_Payments")]
+        Flight -->|"TransactWriteItems"| FlightT[("Travel_Flights")]
+        Hotel -->|"TransactWriteItems"| HotelT[("Travel_Hotels")]
+        Pay --> Outbox[("TravelOutbox")]
+        Flight --> Outbox
+        Hotel --> Outbox
     end
 
-    subgraph Asynchronous Notification Pipeline
-        DDB_Outbox -.->|"DynamoDB Stream (NEW_IMAGE)"| RelayLambda["Outbox Relay Lambda"]
-        RelayLambda -->|Publish with Attributes| SNS["SNS Topic: TravelBookingEventsTopic"]
-        SNS --> SQS["SQS Queue: TravelNotificationQueue"]
-        SQS -.->|After 3 Failures| DLQ["SQS DLQ: TravelNotificationDLQ"]
-        SQS --> ConsumerLambda["Notification Consumer Lambda"]
-        ConsumerLambda -->|Send Email| SES["AWS SES (Email Service)"]
-        SES --> UserInbox["Customer Inbox"]
+    subgraph Notify["Notification path (asynchronous)"]
+        Outbox -.->|"DynamoDB Stream, NEW_IMAGE"| Relay["TravelOutboxRelayFunction"]
+        Relay -->|"Publish"| SNS["SNS topic: TravelBookingAlerts"]
+        SNS --> SQS["SQS queue: TravelNotificationQueue"]
+        SQS -.->|"after 3 failed deliveries"| DLQ["SQS queue: TravelNotificationDLQ"]
+        SQS --> Consumer["TravelNotificationConsumerFunction"]
+        Consumer -->|"SendEmail"| SES["SES"]
     end
 ```
 
----
+## How the saga runs
 
-## 3. Architectural Design Patterns
+### Payment first
 
-### A. Payment-First Saga Pattern
-- **Workflow Order**: `Process Payment` &rarr; `Book Flight` &rarr; `Book Hotel` &rarr; `Succeed`.
-- **Financial Protection**: Funds are secured before external resources are reserved. If payment fails, execution terminates immediately with **zero** supplier reservations made.
-- **Compensating Transactions**: If any downstream step fails (e.g. hotel room sold out), the Step Function catches the exception and executes reverse compensations (`UndoFlight` &rarr; `RefundPayment`) to guarantee eventual consistency.
+The state machine definition is in [`infrastructure/step-function.json.example`](infrastructure/step-function.json.example). It starts at `Process Payment`, then runs `Book Flight`, then `Book Hotel`, and ends at `Booking Success`.
 
-### B. Transactional Outbox Pattern
-- Solves the dual-write problem by eliminating direct calls to messaging services from business handlers.
-- Whenever a worker Lambda processes an action (payment, reservation, or compensation), it issues a DynamoDB **`TransactWriteItems`** request that writes both:
-  1. The **Domain Record** (e.g., `Travel_Payments`, `Travel_Flights`, or `Travel_Hotels`).
-  2. An **Outbox Record** in the `TravelOutbox` table.
-- Both writes succeed or fail **atomically**.
-- `TravelOutbox` records include a DynamoDB **Time-To-Live (`ttl`)** set to 7 days for automated garbage collection without operational maintenance.
+The payment runs first so that a declined payment ends the run before any flight or hotel is booked. In that case the run ends at `Payment Fail` with the error `PaymentError`, and no table has a new row.
 
-### C. Decoupled Asynchronous Notifications
-- The synchronous booking path (Step Functions) does not block on sending emails.
-- As soon as an Outbox item is committed, **DynamoDB Streams (`NEW_IMAGE`)** captures the insertion.
-- The **`OutboxRelayHandler`** reads the stream batch and publishes the payload to an **AWS SNS Topic** with structured message attributes (`eventType`, `bookingId`, `eventId`).
-- An **AWS SQS Queue** subscribed to the topic buffers the events.
-- The **`NotificationConsumerHandler`** polls SQS, unpacks the message payload, and dispatches confirmation emails via **AWS SES**.
+### Compensation
 
-### D. Resilience & DLQ Redrive Policies
-- **Dead Letter Queue (DLQ)**: `TravelNotificationDLQ` is attached to the notification queue with `maxReceiveCount: 3`. If SES is throttled or a payload is corrupted, the message retries 3 times before being isolated in the DLQ.
-- **Monitoring**: A CloudWatch alarm (`TravelNotificationDLQAlarm`) monitors `ApproximateNumberOfMessagesVisible >= 1`.
-- **Automated Redrive**: SQS Message Move Tasks allow re-processing quarantined DLQ messages back to the primary queue once the root cause is resolved.
+Each booking step has a `Catch` that starts the undo steps for everything that ran before it, in reverse order:
 
----
+| Failed step | Undo steps that run |
+| :--- | :--- |
+| `Book Flight` | `Undo Flight`, then `Refund Payment` |
+| `Book Hotel` | `Undo Hotel`, then `Undo Flight`, then `Refund Payment` |
 
-## 4. Repository Structure
+The undo steps also cover the step that failed. A Lambda function can commit its write and then fail before it returns, so the state machine cannot tell whether the failed step wrote anything. An undo step on a booking that was never written does nothing. The cancel uses a DynamoDB condition, `attribute_exists(booking_id)`, so it writes no row and no event.
 
-```
-travel-booking/
-├── .gitignore                           # Comprehensive root gitignore (secrets, build artifacts, IDEs)
-├── README.md                            # Production architectural documentation (this file)
-├── booking.json                         # Sample Step Functions execution input payload
-│
-├── infrastructure/                      # Infrastructure as Code (AWS SAM)
-│   ├── template.yaml                    # DynamoDB, SQS, SNS, Lambdas, Step Functions
-│   ├── step-function.json.example       # Payment-First Saga ASL state machine definition
-│   └── README.md                        # Infrastructure deployment & DLQ redrive guide
-│
-├── travel-workers/                      # Serverless microservices (Java 21 AWS Lambda)
-│   ├── pom.xml                          # Maven configuration (AWS SDK v2, Powertools, JUnit 5)
-│   └── src/
-│       ├── main/java/com/travel/workers/
-│       │   ├── PaymentHandler.java              # Payment & refund handler (TransactWriteItems)
-│       │   ├── FlightHandler.java               # Flight booking & cancellation handler
-│       │   ├── HotelHandler.java                # Hotel booking & cancellation handler
-│       │   ├── OutboxHelper.java                # Outbox schema & atomic Put builder
-│       │   ├── OutboxRelayHandler.java          # DynamoDB Streams -> SNS Relay Lambda
-│       │   └── NotificationConsumerHandler.java # SQS -> SES Consumer Lambda
-│       └── test/java/com/travel/workers/
-│           ├── WorkersOutboxTest.java           # Unit tests for atomic TransactWriteItems
-│           ├── OutboxRelayHandlerTest.java      # Unit tests for Stream to SNS relay
-│           └── NotificationConsumerHandlerTest.java # Unit tests for SQS to SES consumer
-│
-└── travel-api/                          # Spring Boot 3 REST API intake service
-    ├── pom.xml                          # Maven configuration
-    └── src/
-        └── main/
-            ├── java/com/travel/api/             # Spring Boot controller & service
-            └── resources/
-                └── application.properties.example # Safe configuration template
+Each undo step retries up to 6 times on any error. The waits start at 1 second and double each time. If `Undo Hotel` or `Undo Flight` still fails, `Refund Payment` runs anyway, so the customer gets the money back. The run then ends in one of two ways:
+
+- **`SagaRollbackComplete`.** Every undo step succeeded. The records are consistent.
+- **`CompensationFailed`.** At least one undo step failed after all its retries. A person has to repair the records. The live deployment emails an operations address for these runs through an EventBridge rule.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SFN as Step Functions
+    participant Pay as PaymentHandler
+    participant Flight as FlightHandler
+    participant Hotel as HotelHandler
+
+    SFN->>Pay: PAY
+    Pay-->>SFN: PAYMENT PROCESSED
+    SFN->>Flight: BOOK
+    Flight-->>SFN: CONFIRMED
+    SFN->>Hotel: BOOK, destination "Atlantis"
+    Hotel-->>SFN: error "Hotel is full. Try Later"
+    Note over SFN: Catch starts the undo steps
+    SFN->>Hotel: CANCEL (no hotel row, so nothing changes)
+    SFN->>Flight: CANCEL
+    Flight-->>SFN: CANCELLED
+    SFN->>Pay: REFUND
+    Pay-->>SFN: REFUNDED
+    Note over SFN: Run ends at Saga Fail, error SagaRollbackComplete
 ```
 
+### Transactional outbox
 
-## 5. Component Breakdown
+Every action, including each undo, sends one DynamoDB `TransactWriteItems` request with two items:
 
-| Component | Class / File | Purpose & Responsibilities |
+1. The business record in `Travel_Payments`, `Travel_Flights`, or `Travel_Hotels`.
+2. An event record in `TravelOutbox`.
+
+DynamoDB applies both items or neither. A crash cannot leave a business record without its event.
+
+[`OutboxHelper`](travel-workers/src/main/java/com/travel/workers/OutboxHelper.java) builds the event record. It has the attributes `eventId`, `bookingId`, `eventType`, `payload`, `createdAt`, and `ttl`. The `ttl` is 7 days after `createdAt`, so DynamoDB deletes old event records when TTL is enabled on the table.
+
+## How events become emails
+
+The booking path does not wait for email. The state machine has no SNS or SES step.
+
+1. The `TravelOutbox` table streams each new item (`NEW_IMAGE`) to [`OutboxRelayHandler`](travel-workers/src/main/java/com/travel/workers/OutboxRelayHandler.java).
+2. The relay skips every stream record that is not an `INSERT`. It publishes the payload to SNS with the message attributes `eventType`, `bookingId`, and `eventId`.
+3. `TravelNotificationQueue` is subscribed to the topic.
+4. [`NotificationConsumerHandler`](travel-workers/src/main/java/com/travel/workers/NotificationConsumerHandler.java) reads batches from the queue, removes the SNS envelope, and sends an HTML and text email through SES. It escapes every payload field before it puts the field in the HTML.
+
+A message with no `userEmail` is skipped. When one send fails, the consumer reports only that message as failed (`ReportBatchItemFailures`). SQS then delivers only that message again. After 3 failed deliveries, SQS moves the message to `TravelNotificationDLQ`.
+
+Moving messages from the DLQ back to the main queue is a manual step. See [Redrive the DLQ](infrastructure/README.md#redrive-the-dlq).
+
+## Failure triggers
+
+These inputs make a step fail on purpose:
+
+| Input | What fails | How the run ends |
 | :--- | :--- | :--- |
-| **Payment Service** | [`PaymentHandler.java`](file:///c:/Users/akshr/OneDrive/Desktop/travel-booking/travel-workers/src/main/java/com/travel/workers/PaymentHandler.java) | Processes credit card charges and issues refunds. Writes atomically to `Travel_Payments` and `TravelOutbox` (`PAYMENT_COMPLETED`, `PAYMENT_REFUNDED`). |
-| **Flight Service** | [`FlightHandler.java`](file:///c:/Users/akshr/OneDrive/Desktop/travel-booking/travel-workers/src/main/java/com/travel/workers/FlightHandler.java) | Reserves flights and executes cancellations. Writes atomically to `Travel_Flights` and `TravelOutbox` (`FLIGHT_BOOKED`, `FLIGHT_CANCELLED`). |
-| **Hotel Service** | [`HotelHandler.java`](file:///c:/Users/akshr/OneDrive/Desktop/travel-booking/travel-workers/src/main/java/com/travel/workers/HotelHandler.java) | Reserves hotel rooms and executes cancellations. Writes atomically to `Travel_Hotels` and `TravelOutbox` (`HOTEL_BOOKED`, `HOTEL_CANCELLED`). |
-| **Outbox Utility** | [`OutboxHelper.java`](file:///c:/Users/akshr/OneDrive/Desktop/travel-booking/travel-workers/src/main/java/com/travel/workers/OutboxHelper.java) | Encapsulates the schema (`eventId`, `bookingId`, `eventType`, `payload`, `createdAt`, `ttl`) and generates `TransactWriteItem` payloads. |
-| **Outbox Relay** | [`OutboxRelayHandler.java`](file:///c:/Users/akshr/OneDrive/Desktop/travel-booking/travel-workers/src/main/java/com/travel/workers/OutboxRelayHandler.java) | Reads DynamoDB Stream `NEW_IMAGE` events on `INSERT` and dispatches messages to the central SNS Topic. |
-| **Notification Consumer** | [`NotificationConsumerHandler.java`](file:///c:/Users/akshr/OneDrive/Desktop/travel-booking/travel-workers/src/main/java/com/travel/workers/NotificationConsumerHandler.java) | Consumes SQS records, unwraps SNS envelopes, and triggers AWS SES to deliver formatted HTML/text booking confirmation emails. |
-| **State Machine** | [`step-function.json`](file:///c:/Users/akshr/OneDrive/Desktop/travel-booking/infrastructure/step-function.json) | ASL definition orchestrating the payment-first saga and routing rollbacks via `Catch` blocks. |
-| **Infrastructure** | [`template.yaml`](file:///c:/Users/akshr/OneDrive/Desktop/travel-booking/infrastructure/template.yaml) | AWS SAM template provisioning all DynamoDB tables, SNS, SQS, DLQ, CloudWatch alarms, and Lambdas. |
+| `"amount"` above `1000` | `PaymentHandler` throws before it writes anything | `Payment Fail`, error `PaymentError`. No rows. |
+| `"destination": "Mars"` | `FlightHandler` throws | `Undo Flight` does nothing, `Refund Payment` runs, and the run ends at `Saga Fail` with `SagaRollbackComplete` |
+| `"destination": "Atlantis"` | `HotelHandler` throws | `Undo Hotel` does nothing, `Undo Flight` and `Refund Payment` run, and the run ends at `Saga Fail` with `SagaRollbackComplete` |
 
----
+An amount of exactly `1000` is accepted.
 
-## 6. Saga Workflow & Compensation Logic
+## Known limitations
 
-### Happy Path (All Steps Succeed)
-```mermaid
-sequenceDiagram
-    autonumber
-    participant SFN as Step Functions
-    participant Pay as PaymentHandler
-    participant Flight as FlightHandler
-    participant Hotel as HotelHandler
-    participant Outbox as TravelOutbox
+- **No idempotency.** A second booking with the same `bookingId` overwrites the first payment record. If that second booking then fails, the refund marks the first booking as refunded.
+- **The relay can lose events.** The SAM template's stream mapping retries a failed batch 3 times and has no `OnFailure` destination. After the retries run out, those records are dropped.
+- **The relay can send an event twice.** A retried batch publishes again the records that already went out, so a customer can get a duplicate email.
+- **Missing input fields fail the run before any step.** If the input has no `destination`, for example, Step Functions raises `States.Runtime`. A `Catch` cannot handle that error. The run fails at `Process Payment` without calling the Lambda function, so nothing is written.
+- **The SAM template is unverified.** It has never been deployed. Four problems are known:
+  - It points at `step-function.json`, which is gitignored, so the file is missing.
+  - The ARNs in the `.example` file do not match the template's function names, which end in `-${Environment}`.
+  - It sets `AWS_REGION`, which Lambda reserves. Deployment is expected to fail. This comes from the AWS documentation and was not tried.
+  - It creates no API Gateway, so `travel-api` has nothing to call.
+- **The template's DLQ alarm notifies no one.** `TravelNotificationDLQAlarm` has no `AlarmActions`.
+- **The tests mock AWS.** No test calls a real AWS service. `SagaCompensationTest` runs the real state machine definition against the real handlers, but it uses a small interpreter in the test code. That interpreter understands only `States.ALL` errors.
 
-    SFN->>Pay: Action: PAY
-    Pay->>Outbox: TransactWrite(Travel_Payments + Outbox: PAYMENT_COMPLETED)
-    Pay-->>SFN: Payment Success (TX-ID)
+## Repository layout
 
-    SFN->>Flight: Action: BOOK
-    Flight->>Outbox: TransactWrite(Travel_Flights + Outbox: FLIGHT_BOOKED)
-    Flight-->>SFN: Flight Success (FL-ID)
+The tree below matches `git ls-files` with the IDE files left out.
 
-    SFN->>Hotel: Action: BOOK
-    Hotel->>Outbox: TransactWrite(Travel_Hotels + Outbox: HOTEL_BOOKED)
-    Hotel-->>SFN: Hotel Success (HL-ID)
-
-    SFN-->>SFN: State: Booking Success
+```
+.
+├── .github/workflows/ci.yml          # Runs mvn -B verify for both Maven projects
+├── LICENSE
+├── README.md
+├── booking.json                      # Sample state machine input
+├── infrastructure/
+│   ├── README.md                     # Deployment steps and DLQ redrive
+│   ├── step-function.json.example    # State machine definition (Amazon States Language)
+│   └── template.yaml                 # AWS SAM template, never deployed
+├── travel-api/                       # Spring Boot 4 app that forwards bookings to API Gateway
+│   ├── mvnw, mvnw.cmd, pom.xml
+│   └── src/
+│       ├── main/java/com/travel/api/
+│       │   ├── TravelApiApplication.java
+│       │   ├── config/CorsConfig.java
+│       │   ├── controller/BookingController.java
+│       │   ├── dto/BookingRequest.java
+│       │   └── service/TravelService.java
+│       ├── main/resources/application.properties.example
+│       └── test/java/com/travel/api/TravelApiApplicationTests.java
+└── travel-workers/                   # Java 21 Lambda handlers
+    ├── pom.xml
+    └── src/
+        ├── main/java/com/travel/workers/
+        │   ├── PaymentHandler.java
+        │   ├── FlightHandler.java
+        │   ├── HotelHandler.java
+        │   ├── OutboxHelper.java
+        │   ├── OutboxRelayHandler.java
+        │   └── NotificationConsumerHandler.java
+        └── test/java/com/travel/workers/
+            ├── CancelNothingBookedTest.java
+            ├── CompensationNotificationTest.java
+            ├── HandlerActionTest.java
+            ├── NotificationConsumerHandlerTest.java
+            ├── OutboxRelayHandlerTest.java
+            ├── PaymentAmountTest.java
+            ├── SagaCompensationTest.java
+            └── WorkersOutboxTest.java
 ```
 
-### Failure Path (Hotel Full & Compensation Rollback)
-```mermaid
-sequenceDiagram
-    autonumber
-    participant SFN as Step Functions
-    participant Pay as PaymentHandler
-    participant Flight as FlightHandler
-    participant Hotel as HotelHandler
-    participant Outbox as TravelOutbox
+## Build and test
 
-    SFN->>Pay: Action: PAY
-    Pay->>Outbox: TransactWrite(Travel_Payments + Outbox)
-    Pay-->>SFN: Payment Success ✅
+You need Java 21 and Maven 3.9 or later. Run each project's tests from its own directory:
 
-    SFN->>Flight: Action: BOOK
-    Flight->>Outbox: TransactWrite(Travel_Flights + Outbox)
-    Flight-->>SFN: Flight Success ✅
-
-    SFN->>Hotel: Action: BOOK (Destination: "Atlantis")
-    Hotel-->>SFN: Exception: "Hotel is full" ❌
-
-    Note over SFN: Step Function Catches Error -> Starts Rollback Flow
-    SFN->>Flight: Action: CANCEL (Compensate Flight)
-    Flight->>Outbox: TransactWrite(Status: CANCELLED + Outbox)
-    Flight-->>SFN: Flight Cancelled ↩️
-
-    SFN->>Pay: Action: REFUND (Compensate Payment)
-    Pay->>Outbox: TransactWrite(Status: REFUNDED + Outbox)
-    Pay-->>SFN: Payment Refunded ↩️
-
-    SFN-->>SFN: State: Saga Fail (Consistent State Restored)
-```
-
----
-
-## 7. Chaos Engineering & Failure Triggers
-
-The system contains built-in determinism triggers for demonstrating resilience, rollbacks, and error handling:
-
-| Scenario | Input Condition | Triggered Behavior | Rollback Result |
-| :--- | :--- | :--- | :--- |
-| **Card Decline / Over Limit** | `"amount": 1500` (any value `> 1000`) | `PaymentHandler` throws exception immediately. | Saga halts at `Payment Fail`. No flights or hotels are reserved. |
-| **Flight Service Failure** | `"destination": "Mars"` | `FlightHandler` throws exception. | Step Function catches error &rarr; triggers `Refund Payment` &rarr; `Saga Fail`. |
-| **Hotel Unavailable** | `"destination": "Atlantis"` | `HotelHandler` throws exception. | Step Function catches error &rarr; triggers `Undo Flight` &rarr; triggers `Refund Payment` &rarr; `Saga Fail`. |
-
----
-
-## 8. Deployment Guide
-
-### Option 1: Automated Deployment via AWS SAM (Recommended)
-1. **Build and package the Java workers**:
-   ```bash
-   cd travel-workers
-   mvn clean package
-   ```
-2. **Deploy infrastructure**:
-   ```bash
-   cd infrastructure
-   sam build
-   sam deploy --guided
-   ```
-   SAM will provision all DynamoDB tables, SNS topics, SQS queues (with DLQ), Lambdas, triggers, and the Step Function state machine.
-
-### Option 2: Manual Console Deployment
-1. **Package the Uber-JAR**:
-   ```bash
-   cd travel-workers
-   mvn clean package
-   ```
-2. **Upload JAR to AWS Lambda Functions**:
-   Upload `target/travel-workers-1.0-SNAPSHOT.jar` to each Lambda:
-   - `TravelPaymentFunction`: `com.travel.workers.PaymentHandler::handleRequest`
-   - `TravelFlightFunction`: `com.travel.workers.FlightHandler::handleRequest`
-   - `TravelHotelFunction`: `com.travel.workers.HotelHandler::handleRequest`
-   - `TravelOutboxRelayFunction`: `com.travel.workers.OutboxRelayHandler::handleRequest`
-   - `TravelNotificationConsumerFunction`: `com.travel.workers.NotificationConsumerHandler::handleRequest`
-3. **Configure DynamoDB `TravelOutbox`**:
-   - Partition Key: `eventId` (String `S`).
-   - Enable **DynamoDB Streams** (`New image`).
-   - Enable **TTL** on attribute `ttl`.
-4. **Deploy State Machine**:
-   - Create a State Machine in AWS Step Functions.
-   - Paste the contents of [`infrastructure/step-function.json`](file:///c:/Users/akshr/OneDrive/Desktop/travel-booking/infrastructure/step-function.json).
-
----
-
-## 9. Testing Guide
-
-### Automated Unit Testing
-The project includes a comprehensive test suite using **JUnit 5** and **Mockito**:
 ```bash
 cd travel-workers
-mvn test
-```
-**Test Coverage Includes:**
-- Verification of atomic `TransactWriteItems` across domain tables and `TravelOutbox`.
-- Verification of `OutboxHelper` schema and 7-day TTL generation.
-- DynamoDB Stream record filtering (`INSERT` vs `MODIFY`) and SNS message attribute mapping.
-- SQS message parsing, SNS envelope un-wrapping, and SES email payload creation.
-- DLQ exception re-throwing for failed deliveries.
-
-### Manual End-to-End Testing
-Navigate to **AWS Step Functions Console** &rarr; Select your State Machine &rarr; Click **Start execution**.
-
-#### Test A: Success Case (Happy Path)
-```json
-{
-  "userId": "user-101",
-  "userEmail": "xyz@gmail.com",
-  "destination": "Paris",
-  "amount": 250,
-  "bookingId": "bk-manual-001"
-}
+mvn -B verify
+cd ../travel-api
+mvn -B verify
 ```
 
-#### Test B: Hotel Sold Out (Full Rollback Verification)
-```json
-{
-  "userId": "user-102",
-  "userEmail": "xyz@gmail.com",
-  "destination": "Atlantis",
-  "amount": 300,
-  "bookingId": "bk-manual-002"
-}
-```
+CI runs the same two commands on every pull request and on every push to `main`. The worker tests check these things:
 
-#### Test C: Flight Unavailable (Partial Rollback Verification)
-```json
-{
-  "userId": "user-103",
-  "userEmail": "xyz@gmail.com",
-  "destination": "Mars",
-  "amount": 400,
-  "bookingId": "bk-manual-003"
-}
-```
+- `SagaCompensationTest` runs the state machine definition against the real handlers and an in-memory DynamoDB mock. It covers the success path, each failure trigger, and undo steps that fail once or keep failing.
+- `WorkersOutboxTest` checks that a payment, a refund, a flight booking, and a hotel booking each send one `TransactWriteItems` request with the business record and the event record. It also checks that `ttl` is 7 days after `createdAt`.
+- `OutboxRelayHandlerTest` checks that the relay publishes `INSERT` records with the three message attributes, and skips `MODIFY` records.
+- `NotificationConsumerHandlerTest` checks SNS envelope removal, HTML escaping, skipped messages with no email, and per-message failure reports.
+- `PaymentAmountTest`, `HandlerActionTest`, `CompensationNotificationTest`, and `CancelNothingBookedTest` check decimal amounts, unknown actions, emails for undo events, and undo steps on bookings that were never written.
 
----
+## Run travel-api
 
-## 10. DLQ Monitoring & Automated Redrive
+`travel-api` accepts `POST /api/book` and forwards the JSON body to the API Gateway URL in `aws.api.url`. It sends `aws.api.key` in the `x-api-key` header.
 
-If a message fails delivery 3 times, it is redirected to `TravelNotificationDLQ`.
+1. Copy `travel-api/src/main/resources/application.properties.example` to `application.properties` in the same directory. Git ignores that file.
+2. Set the environment variables `AWS_API_URL` and `AWS_API_KEY`, or write the values into `application.properties`.
+3. Start the app from the `travel-api` directory:
+   ```bash
+   ./mvnw spring-boot:run
+   ```
+   On Windows, run `mvnw.cmd spring-boot:run`.
+4. Send a booking to port 8080:
+   ```bash
+   curl -X POST http://localhost:8080/api/book \
+     -H "Content-Type: application/json" \
+     -d '{"bookingId":"bk-001","userId":"user-101","userEmail":"you@example.com","destination":"Paris","amount":250}'
+   ```
 
-### 1. View Quarantined Messages
-```bash
-aws sqs receive-message \
-  --queue-url <TravelNotificationDLQ_URL> \
-  --attribute-names All \
-  --max-number-of-messages 10
-```
+## Deploy
 
-### 2. Execute Automated Redrive
-To move all messages from the DLQ back to the active queue for reprocessing:
-```bash
-aws sqs start-message-move-task \
-  --source-arn <TravelNotificationDLQ_ARN> \
-  --destination-arn <TravelNotificationQueue_ARN>
-```
+[`infrastructure/README.md`](infrastructure/README.md) has the steps for deploying by hand in the AWS console, checking the deployment, and moving messages out of the DLQ.
 
-### 3. Check Redrive Status
-```bash
-aws sqs list-message-move-tasks \
-  --source-arn <TravelNotificationDLQ_ARN>
-```
-*(Alternatively, click the **"Start DLQ redrive"** button directly in the AWS SQS Web Console).*
+## License
 
----
-
+[MIT](LICENSE)
